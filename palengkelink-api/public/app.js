@@ -1,227 +1,876 @@
-/* PalengkeLink – UI logic. Reads sample data from data.js (replace with API calls later). */
+/* PalengkeLink – website. Every screen reads from and saves to the database through the API (src/routes/index.js). */
 
-// ---------- Config ----------
-const ME = 1; // vendor id used when the "Vendor" role is selected
-const NAV = {
-  admin:  ["dashboard", "vendors", "stalls", "payments", "products", "inspections", "maintenance"],
-  staff:  ["dashboard", "stalls", "inspections", "maintenance"],
-  vendor: ["dashboard", "payments", "products", "maintenance"],
+// ---------- Session + API ----------
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* private mode */ } },
 };
-const ICONS = { dashboard: "📊", vendors: "🧑‍🌾", stalls: "🏪", payments: "💳", products: "🧺", inspections: "📋", maintenance: "🔧" };
-const BAD_STATUS  = ["Unpaid", "Failed", "Suspended", "Inactive"];
-const WARN_STATUS = ["Open", "In Progress", "Vacant", "Maintenance"];
-const state = { role: "admin", view: "dashboard" };
+const session = { token: store.get("pl_token"), user: null, avatar: null };
+const cache = {};   // last loaded lists, used to fill the edit forms
+
+async function api(method, path, body) {
+  const res = await fetch("/api" + path, {
+    method,
+    headers: { "content-type": "application/json", ...(session.token ? { authorization: "Bearer " + session.token } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && session.token && !path.startsWith("/auth/")) logout("Your session ended. Please sign in again.");
+  if (!res.ok) throw new Error(data.error || "Something went wrong.");
+  return data;
+}
+const get = (path) => api("GET", path);
+const role = () => session.user?.role;
+
+// ---------- Pages: which roles see them in the menu ----------
+const PAGES = {
+  dashboard:   { icon: "📊", label: "Dashboard",   roles: ["admin", "staff"] },
+  home:        { icon: "🏠", label: "Home",        roles: ["vendor"] },
+  profile:     { icon: "👤", label: "My Profile",  roles: ["vendor"], open: ["admin", "staff", "vendor"] },
+  vendors:     { icon: "🧑‍🌾", label: "Vendors",   roles: ["admin"] },
+  stalls:      { icon: "🏪", label: "Stalls",      roles: ["admin", "staff"] },
+  payments:    { icon: "💳", label: "Payments",    roles: ["admin", "vendor"] },
+  products:    { icon: "🧺", label: "Products",    roles: ["admin", "vendor"] },
+  inspections: { icon: "📋", label: "Inspections", roles: ["admin", "staff"] },
+  maintenance: { icon: "🔧", label: "Maintenance", roles: ["admin", "staff", "vendor"] },
+  directory:   { icon: "🏬", label: "Directory",   roles: ["admin", "staff", "vendor"] },
+  users:       { icon: "🔑", label: "Accounts",    roles: ["admin"] },
+  account:     { icon: "⚙️", label: "Account",     roles: ["admin", "staff", "vendor"] },
+};
+const canOpen = (page) => PAGES[page] && (PAGES[page].open || PAGES[page].roles).includes(role());
+const homePage = () => (role() === "vendor" ? "home" : "dashboard");
 
 // ---------- Helpers ----------
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const peso = (n) => "₱" + Number(n).toLocaleString();
-const nextId = (list) => list.length + 1;
-const vendorName = (id) => (DB.vendors.find((v) => v.id == id) || {}).business || "—";
-const supplierName = (id) => (DB.suppliers.find((s) => s.id == id) || {}).name || "—";
-const supplierIdByName = (name) => (DB.suppliers.find((s) => s.name === name) || {}).id;
-const sum = (rows, key) => rows.reduce((total, r) => total + r[key], 0);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const peso = (n) => "₱" + Number(n || 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pesoShort = (n) => "₱" + Number(n || 0).toLocaleString("en-PH", { maximumFractionDigits: 0 });   // for big stat numbers
+const day = (d) => (d ? new Date(d).toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }) : "—");
+const month = (d) => new Date(d).toLocaleDateString("en-PH", { year: "numeric", month: "long", timeZone: "UTC" });
+const today = () => new Date().toISOString().slice(0, 10);
+const nice = (s) => String(s ?? "").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+const opts = (list) => list.map((x) => [x, nice(x)]);
+const ROLE_NAMES = { admin: "Admin / Market Manager", staff: "Market Staff / Inspector", vendor: "Vendor" };
+const greeting = () => { const h = new Date().getHours(); return h < 12 ? "Magandang umaga" : h < 18 ? "Magandang hapon" : "Magandang gabi"; };
 
-function badge(text) {
-  const cls = BAD_STATUS.includes(text) ? "x" : WARN_STATUS.includes(text) ? "w" : "";
-  return `<span class="b ${cls}">${esc(text)}</span>`;
+const BAD = ["unpaid", "failed", "suspended", "inactive", "out_of_stock"];
+const WARN = ["open", "in_progress", "vacant", "maintenance", "partial", "pending"];
+const badge = (s) => `<span class="b ${BAD.includes(s) ? "x" : WARN.includes(s) ? "w" : ""}">${esc(nice(s))}</span>`;
+const btn = (act, id, text, cls = "sm alt") => `<button class="${cls}" data-act="${act}" data-id="${id}">${text}</button>`;
+const head = (title, buttons = "", sub = "") =>
+  `<div class="head"><div><h2>${title}</h2>${sub ? `<small class="mut">${sub}</small>` : ""}</div><div class="acts">${buttons}</div></div>`;
+const empty = (icon, text) => `<div class="empty"><span>${icon}</span><p>${text}</p></div>`;
+
+/** Stat card: big number, label, coloured icon bubble. */
+const stat = (icon, value, text, href, tone = "") =>
+  `<${href ? `a href="${href}"` : "div"} class="card stat ${tone}"><span class="ico">${icon}</span>
+    <div><b>${esc(value)}</b><span>${esc(text)}</span></div></${href ? "a" : "div"}>`;
+
+/** Picture, or coloured initials when there is no picture. */
+function avatar(name, src, cls = "") {
+  if (src) return `<img class="av ${cls}" src="${esc(src)}" alt="">`;
+  const initials = String(name || "?").split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  let hue = 0;
+  for (const ch of String(name)) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
+  return `<span class="av ${cls}" style="background:hsl(${hue} 45% 40%)">${esc(initials)}</span>`;
 }
 
-function stat(value, label) {
-  return `<div class="card stat"><b>${value}</b><span>${label}</span></div>`;
+/** Table that turns into cards on phones (td[data-l] holds the column name). Cells are already-escaped HTML. */
+function table(headers, rows, emptyText = "No records yet.") {
+  if (!rows.length) return `<div class="card">${empty("🗂️", esc(emptyText))}</div>`;
+  const search = rows.length > 5 ? `<input class="q" type="search" placeholder="🔍 Search…">` : "";
+  const body = rows.map((cells) => `<tr data-r>${cells.map((c, i) => `<td data-l="${esc(headers[i])}">${c ?? ""}</td>`).join("")}</tr>`).join("");
+  return `${search}<div class="tw"><table><thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
-/** Table that turns into cards on phones (td[data-l] holds the column name). */
-function table(headers, rows) {
-  const search = rows.length > 4 ? `<input class="q" type="search" placeholder="🔍 Search records…">` : "";
-  const head = headers.map((h) => `<th>${h}</th>`).join("");
-  const body = rows.length
-    ? rows.map((cells) => `<tr data-r>${cells.map((c, i) => `<td data-l="${headers[i]}">${c}</td>`).join("")}</tr>`).join("")
-    : `<tr><td>No records yet.</td></tr>`;
-  return `${search}<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+function toast(message, bad = false) {
+  const t = $("t");
+  t.textContent = (bad ? "⚠️ " : "✓ ") + message;
+  t.className = "on" + (bad ? " bad" : "");
+  clearTimeout(t.timer);
+  t.timer = setTimeout(() => (t.className = ""), bad ? 4500 : 2500);
 }
 
-/** Collapsible form. field = { name, label, type?, options? } (options => dropdown). */
-function formCard(action, title, fields) {
-  const inputs = fields.map((f) => {
-    const control = f.options
-      ? `<select name="${f.name}">${f.options.map((o) => `<option>${esc(o)}</option>`).join("")}</select>`
-      : `<input name="${f.name}" type="${f.type || "text"}" required>`;
-    return `<label>${f.label}${control}</label>`;
-  }).join("");
-  return `<details class="card fm"><summary>＋ ${title}</summary>
-    <form data-action="${action}" data-msg="${title}">${inputs}<button>${title}</button></form></details>`;
+// ---------- Pictures: crop + shrink in the browser before saving ----------
+function resizeImage(file, w, h, maxLength) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(img.src);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      const scale = Math.max(w / img.width, h / img.height);
+      const sw = w / scale, sh = h / scale;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, 0, 0, w, h);
+      for (let q = 0.85; q > 0.3; q -= 0.1) {
+        const url = canvas.toDataURL("image/jpeg", q);
+        if (url.length <= maxLength) return resolve(url);
+      }
+      reject(new Error("That picture is too large."));
+    };
+    img.onerror = () => reject(new Error("That file is not a picture."));
+    img.src = URL.createObjectURL(file);
+  });
 }
 
-// ---------- Pages ----------
+// ---------- Form dialog ----------
+// field = { name, label, type?: text|number|date|month|email|password|textarea|select|image, options?: [[value, label]],
+//           required? (default true), hint?, step?, min?, max?, list?, minlength?, wide?, w/h/max/round (image) }
+function fieldHtml(f, values) {
+  const val = values[f.name] ?? f.value ?? "";
+  const req = f.required === false ? "" : "required";
+  if (f.type === "image") {
+    return `<div class="lbl wide">${esc(f.label)}<div class="imgpick ${f.round ? "round" : ""}">
+      <img ${val ? `src="${esc(val)}"` : "hidden"} alt=""><input type="hidden" name="${f.name}" value="${esc(val)}">
+      <input type="file" accept="image/*" data-w="${f.w}" data-h="${f.h}" data-max="${f.max}">
+      <button type="button" class="sm ghost" data-clear>Remove</button></div></div>`;
+  }
+  let control;
+  if (f.type === "select") {
+    control = `<select name="${f.name}" ${req}>${f.options.map(([v, l]) =>
+      `<option value="${esc(v)}" ${String(v) === String(val) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  } else if (f.type === "textarea") {
+    control = `<textarea name="${f.name}" rows="4" maxlength="${f.max || 1000}" ${req}>${esc(val)}</textarea>`;
+  } else {
+    const extra = ["step", "min", "max", "list", "minlength"].filter((k) => f[k] != null).map((k) => `${k}="${esc(f[k])}"`).join(" ");
+    control = `<input name="${f.name}" type="${f.type || "text"}" value="${esc(val)}" ${extra} ${req} autocomplete="${f.type === "password" ? "new-password" : "off"}">`;
+  }
+  return `<label class="${f.wide ? "wide" : ""}">${esc(f.label)}${control}${f.hint ? `<small>${esc(f.hint)}</small>` : ""}</label>`;
+}
+
+/** Open a form in a dialog. onSubmit(data) saves it; on success the dialog closes and the page reloads its data. */
+function openForm({ title, fields, values = {}, submit = "Save", done = "Saved", onSubmit, onInput, extra = "" }) {
+  const dlg = $("dlg");
+  dlg.innerHTML = `<form class="dlg-form"><div class="dlg-head"><h3>${esc(title)}</h3><button type="button" class="icon-btn" data-close title="Close">✕</button></div>
+    <div class="fields">${fields.map((f) => fieldHtml(f, values)).join("")}</div>
+    ${extra}<p class="err" hidden></p>
+    <div class="dlg-actions"><button type="button" class="ghost" data-close>Cancel</button><button>${esc(submit)}</button></div></form>`;
+  const form = dlg.querySelector("form");
+  const err = form.querySelector(".err");
+  form.oninput = (e) => onInput && onInput(form, e);
+  form.onchange = async (e) => {
+    const file = e.target.type === "file" && e.target.files[0];
+    if (!file) return;
+    const box = e.target.closest(".imgpick");
+    try {
+      const url = await resizeImage(file, +e.target.dataset.w, +e.target.dataset.h, +e.target.dataset.max);
+      box.querySelector("input[type=hidden]").value = url;
+      Object.assign(box.querySelector("img"), { src: url, hidden: false });
+      err.hidden = true;
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  };
+  form.onclick = (e) => {
+    if (e.target.closest("[data-close]")) dlg.close();
+    const clear = e.target.closest("[data-clear]");
+    if (clear) {
+      const box = clear.closest(".imgpick");
+      box.querySelector("input[type=hidden]").value = "";
+      box.querySelector("input[type=file]").value = "";
+      box.querySelector("img").hidden = true;
+      box.querySelector("img").removeAttribute("src");
+    }
+  };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries([...new FormData(form)].filter(([, v]) => typeof v === "string"));
+    const button = form.querySelector(".dlg-actions button:not([type])");
+    button.disabled = true;
+    err.hidden = true;
+    try {
+      const message = await onSubmit(data);   // onSubmit may return its own success message
+      dlg.close();
+      toast(typeof message === "string" ? message : done);
+      render();
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.hidden = false;
+    } finally { button.disabled = false; }
+  };
+  dlg.showModal();
+}
+
+// ---------- Dashboard pieces ----------
+/** Stalls as coloured tiles: green = occupied, amber = vacant, red = maintenance. */
+const stallMap = (stalls) => `<div class="card"><div class="card-head"><h3>Stall map</h3><a href="#stalls" class="link">Stalls</a></div>
+  ${stalls.length ? `<div class="tiles">${stalls.map((s) => `<a href="#stalls" class="tile s-${s.status}" title="${esc(s.stall_number)} · ${esc(nice(s.status))}${s.business_name ? " · " + esc(s.business_name) : ""}">
+    <b>${esc(s.stall_number)}</b><small>${esc(s.business_name || nice(s.status))}</small></a>`).join("")}</div>
+    <div class="legend"><i class="s-occupied"></i>Occupied <i class="s-vacant"></i>Vacant <i class="s-maintenance"></i>Maintenance</div>` : empty("🏪", "No stalls yet.")}</div>`;
+
+const requestList = (requests) => {
+  const open = requests.filter((r) => r.status !== "resolved").slice(0, 5);
+  return `<div class="card"><div class="card-head"><h3>Open maintenance</h3><a href="#maintenance" class="link">See all</a></div>
+    ${open.length ? `<ul class="list">${open.map((r) => `<li><span class="dot ${r.status}"></span><div><b>${esc(r.issue)}</b>
+      <small class="mut">Stall ${esc(r.stall_number)} · ${esc(r.business_name)} · ${day(r.request_date)}</small></div>${badge(r.status)}</li>`).join("")}</ul>`
+      : empty("🎉", "No open requests. Everything is working.")}</div>`;
+};
+
+const collection = (payments) => {
+  if (!payments.length) return `<div class="card"><h3>Rent collection</h3>${empty("🧾", "No bills yet. Create this month's bills on the Payments page.")}</div>`;
+  const latest = payments.map((p) => String(p.billing_month).slice(0, 7)).sort().pop();
+  const bills = payments.filter((p) => String(p.billing_month).startsWith(latest));
+  const due = bills.reduce((t, p) => t + Number(p.amount_due), 0);
+  const paid = bills.reduce((t, p) => t + Number(p.amount_paid), 0);
+  const pct = due ? Math.round((paid / due) * 100) : 0;
+  return `<div class="card"><div class="card-head"><h3>Rent collection · ${month(bills[0].billing_month)}</h3><a href="#payments" class="link">Payments</a></div>
+    <div class="ring" style="--p:${pct}"><b>${pct}%</b><small>collected</small></div>
+    <div class="split"><div><small class="mut">Collected</small><b class="ok">${peso(paid)}</b></div>
+      <div><small class="mut">Still unpaid</small><b class="bad">${peso(due - paid)}</b></div></div></div>`;
+};
+
+const pendingList = (users) => {
+  const pending = users.filter((u) => u.status === "pending");
+  if (!pending.length) return "";
+  return `<div class="card attention"><div class="card-head"><h3>🆕 New registrations (${pending.length})</h3><a href="#users" class="link">Accounts</a></div>
+    <ul class="list">${pending.map((u) => `<li>${avatar(u.business_name || u.first_name, null, "")}<div><b>${esc(u.business_name || "—")}</b>
+      <small class="mut">${esc(u.first_name)} ${esc(u.last_name)} · ${esc(u.email)} · ${esc(u.contact_number || "")}</small></div>
+      <span class="acts">${btn("approve", u.user_id, "✓ Approve", "sm")} ${btn("decline", u.user_id, "Decline", "sm danger")}</span></li>`).join("")}</ul></div>`;
+};
+
+// ---------- Screens ----------
 const views = {
-  dashboard() {
-    if (state.role === "vendor") {
-      const myStalls = DB.stalls.filter((s) => s.vendor === ME);
-      const due = sum(DB.payments.filter((p) => p.vendor === ME && p.status === "Unpaid"), "amount");
-      return `<h2>Welcome, ${esc(vendorName(ME))}</h2>
-        <div class="grid">
-          ${stat(myStalls.map((s) => s.no).join(", "), "My assigned stalls")}
-          ${stat(peso(due), "Unpaid balance")}
-          ${stat(DB.products.filter((p) => p.vendor === ME).length, "Products listed")}
-          ${stat(DB.maintenance.filter((m) => m.vendor === ME && m.status !== "Resolved").length, "Open maintenance requests")}
-        </div>
-        <div class="qa"><button data-view="payments">💳 My payments</button><button data-view="maintenance">🔧 Report a problem</button></div>`;
-    }
-    const isAdmin = state.role === "admin";
-    const occupied = DB.stalls.filter((s) => s.status === "Occupied").length;
-    const vacant = DB.stalls.filter((s) => s.status === "Vacant").length;
-    const passed = DB.inspections.filter((i) => i.result === "Passed").length;
-    const unpaid = sum(DB.payments.filter((p) => p.status === "Unpaid"), "amount");
-    return `<h2>Dashboard</h2>
+  // ===== Admin / staff dashboard =====
+  async dashboard() {
+    const isAdmin = role() === "admin";
+    const [s, stalls, requests, payments, users] = await Promise.all([get("/dashboard"), get("/stalls"), get("/maintenance"),
+      isAdmin ? get("/payments") : [], isAdmin ? get("/users") : []]);
+    const open = requests.filter((r) => r.status !== "resolved").length;
+    return `<section class="hero" style="--img:url('img/market.jpg')"><div>
+        <h2>${greeting()}, ${esc(session.user.first_name)}!</h2>
+        <p>${stalls.length} stalls · ${s.occupied_stalls} occupied · ${open} open maintenance request(s)</p></div>
+        <div class="acts">${isAdmin
+          ? `<button data-act="generate">🧾 Create monthly bills</button><button class="glass" data-act="addVendor">＋ Register vendor</button>`
+          : `<button data-act="addInspection">📋 Record inspection</button>`}</div></section>
+      ${isAdmin ? pendingList(users) : ""}
       <div class="grid">
-        ${isAdmin ? stat(DB.vendors.length, "Registered vendors") : ""}
-        ${stat(occupied, "Occupied stalls")}
-        ${stat(vacant, "Vacant stalls")}
-        ${isAdmin ? stat(peso(unpaid), "Unpaid rent") : ""}
-        ${stat(Math.round((passed / DB.inspections.length) * 100) + "%", "Inspections passed")}
+        ${isAdmin ? stat("🧑‍🌾", s.vendors, "Registered vendors", "#vendors", "t-blue") : ""}
+        ${stat("🏪", s.occupied_stalls, "Occupied stalls", "#stalls", "t-green")}
+        ${stat("🔑", s.vacant_stalls, "Vacant stalls", "#stalls", "t-amber")}
+        ${stat("🛠️", stalls.filter((x) => x.status === "maintenance").length, "Under maintenance", "#stalls", "t-red")}
+        ${isAdmin ? stat("💰", pesoShort(s.unpaid_rent), "Unpaid rent", "#payments", "t-red") : ""}
+        ${stat("✅", s.inspections_passed_pct == null ? "—" : s.inspections_passed_pct + "%", "Inspections passed", "#inspections", "t-green")}
       </div>
-      <div class="card"><b>Stall occupancy</b>
-        <div class="bar"><i style="width:${(occupied / DB.stalls.length) * 100}%"></i></div>
-        <small style="color:var(--mut)">${occupied} of ${DB.stalls.length} stalls occupied</small></div>`;
+      <div class="cols">${stallMap(stalls)}${isAdmin ? collection(payments) : ""}${requestList(requests)}</div>`;
   },
 
-  vendors() {
-    const rows = DB.vendors.map((v) => [v.id, esc(v.business), esc(v.owner), esc(v.contact), badge(v.status)]);
-    return `<h2>Vendor Management</h2>
-      ${formCard("addVendor", "Register vendor", [
-        { name: "business", label: "Business name" }, { name: "owner", label: "Owner" }, { name: "contact", label: "Contact" }])}
-      ${table(["ID", "Business", "Owner", "Contact", "Status"], rows)}`;
+  // ===== Vendor home =====
+  async home() {
+    const [me, stalls, pays, products, requests] = await Promise.all(
+      ["/my/profile", "/my/stalls", "/my/payments", "/my/products", "/my/requests"].map(get));
+    cache.payments = pays;
+    const unpaid = pays.filter((p) => p.status !== "paid");
+    const due = unpaid.reduce((t, p) => t + Number(p.balance), 0);
+    return `<section class="hero vendor" style="--img:url('${me.cover ? esc(me.cover) : "img/market.jpg"}')">
+        <div class="hero-me">${avatar(me.business_name, me.avatar, "lg ring-white")}<div>
+          <h2>${greeting()}, ${esc(session.user.first_name)}!</h2><p>${esc(me.business_name)}${stalls.length ? " · Stall " + esc(stalls.map((s) => s.stall_number).join(", ")) : ""}</p></div></div>
+        <div class="acts"><a class="btn glass" href="#profile">👤 View my profile</a></div></section>
+      ${me.status === "suspended" ? `<div class="card warnbox">⚠️ Your vendor account is suspended. Please visit the market office.</div>` : ""}
+      <div class="grid">
+        ${stat("💳", pesoShort(due), "Unpaid balance", "#payments", due ? "t-red" : "t-green")}
+        ${stat("🏪", stalls.length, "My stalls", null, "t-blue")}
+        ${stat("🧺", products.length, "Products listed", "#products", "t-green")}
+        ${stat("🔧", requests.filter((r) => r.status !== "resolved").length, "Open requests", "#maintenance", "t-amber")}
+      </div>
+      <div class="cols">
+        <div class="card"><div class="card-head"><h3>Bills to pay</h3><a href="#payments" class="link">All payments</a></div>
+          ${unpaid.length ? `<ul class="list">${unpaid.map((p) => `<li><span class="ico-sm">🧾</span><div><b>${month(p.billing_month)} · Stall ${esc(p.stall_number)}</b>
+            <small class="mut">Balance ${peso(p.balance)}</small></div>${btn("pay", p.payment_id, "💳 Pay now", "sm")}</li>`).join("")}</ul>`
+            : empty("🎉", "You are all paid up. Salamat!")}</div>
+        <div class="card"><div class="card-head"><h3>Quick actions</h3></div><div class="quick">
+          <a href="#products" class="qbtn"><span>🧺</span>Add or update products</a>
+          <a href="#maintenance" class="qbtn"><span>🔧</span>Report a problem</a>
+          <a href="#directory" class="qbtn"><span>🏬</span>Browse other vendors</a>
+          <a href="#account" class="qbtn"><span>🔒</span>Change password</a></div></div>
+      </div>`;
   },
 
-  stalls() {
-    const vacant = DB.stalls.filter((s) => s.status === "Vacant").map((s) => s.no);
-    const rows = DB.stalls.map((s) => [s.no, s.type, peso(s.rent), badge(s.status), s.vendor ? esc(vendorName(s.vendor)) : "—"]);
-    const assignForm = state.role === "admin" && vacant.length
-      ? formCard("assignStall", "Assign stall", [
-          { name: "stall", label: "Vacant stall", options: vacant },
-          { name: "vendor", label: "Vendor", options: DB.vendors.map((v) => v.business) }])
-      : "";
-    return `<h2>Stall Management</h2>${assignForm}${table(["Stall", "Type", "Monthly rent", "Status", "Vendor"], rows)}`;
+  // ===== Vendors (admin) =====
+  async vendors() {
+    const list = (cache.vendors = await get("/vendors"));
+    const rows = list.map((v) => [`<span class="who-cell">${avatar(v.business_name, null, "sm2")}<a href="#profile/${v.vendor_id}">${esc(v.business_name)}</a></span>`,
+      esc(`${v.first_name} ${v.last_name}`), esc(v.username), esc(v.contact_number),
+      v.account_status === "active" ? badge(v.status) : badge(v.account_status), btn("editVendor", v.vendor_id, "Edit")]);
+    return head("Vendors", `<button data-act="addVendor">＋ Register vendor</button>`, `${list.length} vendor(s)`) +
+      table(["Business", "Owner", "Username", "Contact", "Status", ""], rows);
   },
 
-  payments() {
-    const isVendor = state.role === "vendor";
-    const list = DB.payments.filter((p) => !isVendor || p.vendor === ME);
-    const unpaid = DB.payments.filter((p) => p.status === "Unpaid");
-    const payForm = state.role === "admin" && unpaid.length
-      ? formCard("recordPayment", "Record payment", [
-          { name: "payment", label: "Unpaid record", options: unpaid.map((p) => `${p.id} · ${p.stall} · ${p.month}`) },
-          { name: "method", label: "Method", options: ["Cash", "GCash", "Bank"] }])
-      : "";
-    const rows = list.map((p) => [p.id, esc(vendorName(p.vendor)), p.stall, p.month, peso(p.amount), badge(p.status)]);
-    return `<h2>${isVendor ? "My Payment History" : "Rental Payments"}</h2>${payForm}
-      ${table(["#", "Vendor", "Stall", "Month", "Amount", "Status"], rows)}`;
+  // ===== Stalls (admin + staff) =====
+  async stalls() {
+    const isAdmin = role() === "admin";
+    const [list, vendors] = await Promise.all([get("/stalls"), isAdmin ? get("/vendors") : []]);
+    cache.stalls = list;
+    cache.vendors = vendors;
+    const rows = list.map((s) => [`<b>${esc(s.stall_number)}</b>`, esc(s.section), esc(s.stall_type), peso(s.monthly_rent), badge(s.status),
+      s.vendor_id ? `<a href="#profile/${s.vendor_id}">${esc(s.business_name)}</a>` : `<span class="mut">—</span>`,
+      btn("editStall", s.stall_id, "Edit") + (isAdmin ? " " + btn("stallVendor", s.stall_id, "Change vendor") : "")]);
+    return head("Stalls", isAdmin ? `<button data-act="addStall">＋ Add stall</button>` : "", `${list.length} stall(s)`) +
+      table(["Stall", "Section", "Type", "Monthly rent", "Status", "Vendor", ""], rows);
   },
 
-  /** Products + Suppliers: each product row (VENDOR_PRODUCTS) shows who supplies it. */
-  products() {
-    const isVendor = state.role === "vendor";
-    const isAdmin = state.role === "admin";
-    const supplierNames = DB.suppliers.filter((s) => s.status === "Active").map((s) => s.name);
-
-    const productForm = isVendor
-      ? formCard("addProduct", "Add product", [
-          { name: "name", label: "Product" }, { name: "category", label: "Category" },
-          { name: "price", label: "Price (₱)", type: "number" }, { name: "stock", label: "Stock", type: "number" },
-          { name: "supplier", label: "Supplier", options: supplierNames }])
-      : "";
-    const productRows = DB.products
-      .filter((p) => !isVendor || p.vendor === ME)
-      .map((p) => [esc(vendorName(p.vendor)), esc(p.name), esc(p.category), peso(p.price), p.stock, esc(supplierName(p.supplier))]);
-
-    let html = `<h2>${isVendor ? "My Products" : "Products &amp; Supply"}</h2>${productForm}
-      ${table(["Vendor", "Product", "Category", "Price", "Stock", "Supplier"], productRows)}`;
-
-    if (isAdmin) {
-      const supplierRows = DB.suppliers.map((s) => [
-        s.id, esc(s.name), esc(s.contact), esc(s.address),
-        DB.products.filter((p) => p.supplier === s.id).length, badge(s.status)]);
-      html += `<h2 style="margin-top:26px">Suppliers</h2>
-        ${formCard("addSupplier", "Add supplier", [
-          { name: "name", label: "Supplier name" }, { name: "contact", label: "Contact" }, { name: "address", label: "Address" }])}
-        ${table(["ID", "Supplier", "Contact", "Address", "Products", "Status"], supplierRows)}`;
+  // ===== Payments =====
+  async payments() {
+    if (role() === "vendor") {
+      const list = (cache.payments = await get("/my/payments"));
+      const due = list.filter((p) => p.status !== "paid").reduce((t, p) => t + Number(p.balance), 0);
+      const rows = list.map((p) => [`<b>${month(p.billing_month)}</b>`, esc(p.stall_number), peso(p.amount_due), peso(p.amount_paid), peso(p.balance), badge(p.status),
+        p.status !== "paid" ? btn("pay", p.payment_id, `💳 Pay ${peso(p.balance)}`, "sm") : `<small class="mut">Paid ${day(p.payment_date)}${p.payment_method ? " · " + esc(nice(p.payment_method)) : ""}</small>`]);
+      return `<div class="card paybox"><div><span class="mut">Total unpaid balance</span><b>${peso(due)}</b></div>
+          <div class="paylogos"><span>GCash</span><span>Card</span><small class="mut">Secure online payment by PayMongo, or pay cash at the market office.</small></div></div>
+        ${head("My bills")}${table(["Month", "Stall", "Amount due", "Paid", "Balance", "Status", ""], rows, "No bills yet.")}`;
     }
-    return html;
+    const list = (cache.payments = await get("/payments"));
+    const rows = list.map((p) => [`#${p.payment_id}`, esc(p.business_name), esc(p.stall_number), month(p.billing_month), peso(p.amount_due),
+      peso(p.amount_paid), p.payment_method ? esc(nice(p.payment_method)) : "—", badge(p.status),
+      p.status !== "paid" ? btn("cash", p.payment_id, "Record cash") : ""]);
+    return head("Rental payments", `<button data-act="generate">🧾 Create monthly bills</button>`, `${list.filter((p) => p.status !== "paid").length} unpaid bill(s)`) +
+      table(["#", "Vendor", "Stall", "Month", "Due", "Paid", "Method", "Status", ""], rows, "No bills yet. Use “Create monthly bills”.");
   },
 
-  inspections() {
-    const rows = DB.inspections.map((i) => [i.id, i.stall, i.date, i.type, badge(i.result), esc(i.inspector)]);
-    return `<h2>Inspection Records</h2>
-      ${formCard("addInspection", "Record inspection", [
-        { name: "stall", label: "Stall", options: DB.stalls.map((s) => s.no) },
-        { name: "type", label: "Type", options: ["Sanitation", "Compliance", "Safety"] },
-        { name: "result", label: "Result", options: ["Passed", "Failed"] }])}
-      ${table(["#", "Stall", "Date", "Type", "Result", "Inspector"], rows)}`;
+  // ===== Products =====
+  async products() {
+    if (role() === "vendor") {
+      const [mine, catalog] = await Promise.all([get("/my/products"), get("/my/catalog")]);
+      cache.myProducts = mine;
+      cache.catalog = catalog;
+      const rows = mine.map((p) => [`<b>${esc(p.product_name)}</b>`, esc(p.category), `${peso(p.selling_price)} / ${esc(p.unit)}`, p.stock_quantity,
+        badge(p.status), esc(p.supplier_name || "—"),
+        btn("editMyProduct", p.vendor_product_id, "Edit") + " " + btn("removeMyProduct", p.vendor_product_id, "Remove", "sm danger")]);
+      return head("My products", `<button data-act="addMyProduct">＋ Add product</button>`, "Other vendors see these on your profile") +
+        table(["Product", "Category", "Price", "Stock", "Status", "Supplier", ""], rows, "You have not listed any products yet.");
+    }
+    const [catalog, listings, suppliers] = await Promise.all([get("/products"), get("/vendor-products"), get("/suppliers")]);
+    cache.catalog = catalog;
+    cache.suppliers = suppliers;
+    return head("Product catalog", `<button data-act="addProduct">＋ Add product</button>`) +
+      table(["Product", "Category", "Unit", "Sold by", ""], catalog.map((p) => [`<b>${esc(p.product_name)}</b>`, esc(p.category), esc(p.unit),
+        `${p.vendors} vendor(s)`, btn("editProduct", p.product_id, "Edit")])) +
+      head("What vendors sell") +
+      table(["Vendor", "Product", "Category", "Price", "Stock", "Status", "Supplier"], listings.map((p) => [
+        `<a href="#profile/${p.vendor_id}">${esc(p.business_name)}</a>`, esc(p.product_name), esc(p.category), peso(p.selling_price),
+        p.stock_quantity, badge(p.status), esc(p.supplier_name || "—")])) +
+      head("Suppliers", `<button data-act="addSupplier">＋ Add supplier</button>`) +
+      table(["Supplier", "Contact", "Address", "Products", "Status", ""], suppliers.map((s) => [`<b>${esc(s.supplier_name)}</b>`,
+        esc(s.contact_number), esc(s.address), s.products, badge(s.status), btn("editSupplier", s.supplier_id, "Edit")]));
   },
 
-  maintenance() {
-    const isVendor = state.role === "vendor";
-    const myStalls = DB.stalls.filter((s) => s.vendor === ME).map((s) => s.no);
-    const rows = DB.maintenance
-      .filter((m) => !isVendor || m.vendor === ME)
-      .map((m) => [m.id, m.stall, esc(vendorName(m.vendor)), esc(m.issue), badge(m.status)]);
-    const requestForm = isVendor
-      ? formCard("addRequest", "Submit request", [{ name: "stall", label: "Stall", options: myStalls }, { name: "issue", label: "Issue" }])
-      : "";
-    return `<h2>Maintenance Requests</h2>${requestForm}${table(["#", "Stall", "Vendor", "Issue", "Status"], rows)}`;
+  // ===== Inspections (admin + staff) =====
+  async inspections() {
+    const [list, stalls] = await Promise.all([get("/inspections"), get("/stalls")]);
+    cache.inspections = list;
+    cache.stalls = stalls;
+    const rows = list.map((i) => [`<b>${esc(i.stall_number)}</b>`, day(i.inspection_date), esc(i.inspection_type), badge(i.result),
+      esc(i.inspector || "—"), esc(i.remarks || "—"), btn("editInspection", i.inspection_id, "Edit")]);
+    return head("Inspections", `<button data-act="addInspection">＋ Record inspection</button>`, `${list.length} record(s)`) +
+      table(["Stall", "Date", "Type", "Result", "Inspector", "Remarks", ""], rows);
+  },
+
+  // ===== Maintenance =====
+  async maintenance() {
+    if (role() === "vendor") {
+      const [list, stalls] = await Promise.all([get("/my/requests"), get("/my/stalls")]);
+      cache.requests = list;
+      cache.myStalls = stalls;
+      const rows = list.map((r) => [`#${r.request_id}`, esc(r.stall_number), esc(r.issue), day(r.request_date), badge(r.status),
+        r.status === "open" ? btn("editRequest", r.request_id, "Edit") : ""]);
+      return head("Maintenance requests", stalls.length ? `<button data-act="addRequest">＋ Report a problem</button>` : "",
+        stalls.length ? "The market office is notified right away" : "You need an assigned stall to report a problem") +
+        table(["#", "Stall", "Issue", "Date", "Status", ""], rows, "No requests yet.");
+    }
+    const list = await get("/maintenance");
+    const rows = list.map((r) => [`#${r.request_id}`, esc(r.stall_number), `<a href="#profile/${r.vendor_id}">${esc(r.business_name)}</a>`,
+      esc(r.issue), day(r.request_date),
+      `<select class="inline" data-change="requestStatus" data-id="${r.request_id}">${["open", "in_progress", "resolved"].map((s) =>
+        `<option value="${s}" ${s === r.status ? "selected" : ""}>${nice(s)}</option>`).join("")}</select>`]);
+    return head("Maintenance requests", "", `${list.filter((r) => r.status !== "resolved").length} open`) +
+      table(["#", "Stall", "Vendor", "Issue", "Date", "Status"], rows);
+  },
+
+  // ===== Vendor directory (everyone) =====
+  async directory() {
+    const list = await get("/directory");
+    const cards = list.map((v) => `<a class="card vcard" data-r href="#profile/${v.vendor_id}">
+        ${avatar(v.business_name, v.avatar, "lg")}
+        <div><b>${esc(v.business_name)}</b><small class="mut">${esc(v.owner_name)}${v.stalls ? " · Stall " + esc(v.stalls) : ""}</small>
+        <span class="chip">🧺 ${v.products} product(s)</span>${v.bio ? `<p>${esc(v.bio.slice(0, 110))}${v.bio.length > 110 ? "…" : ""}</p>` : ""}</div></a>`);
+    return head("Market directory", "", "Every active vendor in the market") +
+      (list.length > 5 ? `<input class="q" type="search" placeholder="🔍 Search vendors or stalls…">` : "") +
+      (cards.length ? `<div class="vgrid">${cards.join("")}</div>` : `<div class="card">${empty("🏬", "No vendors yet.")}</div>`);
+  },
+
+  // ===== Vendor profile (everyone can view; the owner can edit) =====
+  async profile(arg) {
+    const id = arg ? Number(arg) : session.user.vendor_id;
+    if (!id) return `<div class="card">${empty("👤", `Only vendors have a profile. Open one from the <a href="#directory">Directory</a>.`)}</div>`;
+    const p = await get("/directory/" + id);
+    const own = id === session.user.vendor_id;
+    const stalls = p.stall_list.map((s) => `<li>🏪 <b>${esc(s.stall_number)}</b> · ${esc(s.section)} · ${esc(s.stall_type)}</li>`).join("");
+    const products = p.product_list.map((x) => `<div class="ptile"><b>${esc(x.product_name)}</b><small class="mut">${esc(x.category)}</small>
+        <span class="price">${peso(x.selling_price)} <small>/ ${esc(x.unit)}</small></span>
+        ${x.status === "available" ? `<small class="ok">● ${x.stock_quantity} in stock</small>` : badge(x.status)}</div>`).join("");
+    return `<section class="card pf">
+        <div class="cover">${p.cover ? `<img src="${esc(p.cover)}" alt="">` : ""}</div>
+        <div class="pf-head">${avatar(p.business_name, p.avatar, "xl")}
+          <div class="pf-name"><h1>${esc(p.business_name)}</h1>
+            <span class="mut">${esc(p.owner_name)} · ${p.stalls ? "Stall " + esc(p.stalls) : "No stall yet"} · ${p.products} product(s)</span></div>
+          <div class="acts">${own ? `<button data-act="editProfile">✏️ Edit profile</button>`
+            : `<a class="btn alt" href="tel:${esc(p.contact_number)}">📞 Call</a>`}</div>
+        </div></section>
+      <div class="pf-body">
+        <aside>
+          <div class="card"><h3>About</h3>
+            ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : own ? `<p class="mut">Tell other vendors and customers about your business. Tap “Edit profile”.</p>` : ""}
+            <ul class="facts"><li>📞 ${esc(p.contact_number)}</li><li>📍 ${esc(p.address)}</li><li>🗓️ Vendor since ${day(p.registration_date)}</li></ul></div>
+          <div class="card"><h3>Stalls</h3>${stalls ? `<ul class="facts">${stalls}</ul>` : `<p class="mut">No stall assigned.</p>`}</div>
+        </aside>
+        <section class="card"><h3>Products</h3>
+          ${products ? `<div class="pgrid">${products}</div>` : empty("🧺", `No products listed yet.${own ? ` <a href="#products">Add one</a>.` : ""}`)}</section>
+      </div>`;
+  },
+
+  // ===== User accounts (admin) =====
+  async users() {
+    const list = (cache.users = await get("/users"));
+    const rows = list.filter((u) => u.status !== "pending").map((u) => [
+      `<span class="who-cell">${avatar(`${u.first_name} ${u.last_name}`, null, "sm2")}<span><b>${esc(u.first_name)} ${esc(u.last_name)}</b><small class="mut">@${esc(u.username)}</small></span></span>`,
+      esc(u.email), esc(ROLE_NAMES[u.role]), badge(u.status), btn("editUser", u.user_id, "Edit")]);
+    return pendingList(list) + head("User accounts", `<button data-act="addUser">＋ Add admin / inspector</button>`, "Vendors register themselves or on the Vendors page") +
+      table(["Name", "Email", "Role", "Status", ""], rows);
+  },
+
+  // ===== My account (everyone) =====
+  async account() {
+    const me = (session.user = await get("/me"));
+    return `<div class="card acct">${avatar(`${me.first_name} ${me.last_name}`, session.avatar, "xl")}
+        <div><h2>${esc(me.first_name)} ${esc(me.last_name)}</h2><span class="mut">@${esc(me.username)} · ${esc(ROLE_NAMES[me.role])}</span>
+        <span class="mut">✉️ ${esc(me.email)}</span>
+        <div class="acts"><button data-act="changePassword">🔒 Change password</button>
+        ${me.vendor_id ? `<a class="btn alt" href="#profile">👤 Edit my public profile</a>` : ""}
+        <button class="ghost" data-act="logout">Log out</button></div></div></div>
+      <p class="mut small">Forgot your password some day? Use “Forgot password?” on the sign-in page. The reset link is sent to ${esc(me.email)}.</p>`;
   },
 };
 
-// ---------- Form actions (each becomes an API call + stored procedure later) ----------
+// ---------- Buttons ----------
+const find = (list, key, id) => (cache[list] || []).find((x) => x[key] === id);
+const vendorOptions = () => (cache.vendors || []).filter((v) => v.status === "active" && v.account_status === "active").map((v) => [v.vendor_id, v.business_name]);
+const INSPECTION_TYPES = ["Sanitation", "Compliance", "Safety", "Fire safety", "Structural"];
+const withCurrent = (list, value) => (value && !list.includes(value) ? [...list, value] : list);
+
+const vendorFields = [
+  { name: "business_name", label: "Business name" }, { name: "first_name", label: "Owner first name" },
+  { name: "last_name", label: "Owner last name" }, { name: "email", label: "Email", type: "email" },
+  { name: "contact_number", label: "Contact number" }, { name: "address", label: "Address" },
+];
+const stallFields = (isAdmin) => [
+  ...(isAdmin ? [{ name: "stall_number", label: "Stall number" }] : []),
+  { name: "section", label: "Section" }, { name: "stall_type", label: "Type (Wet, Dry, Meat…)" },
+  ...(isAdmin ? [{ name: "monthly_rent", label: "Monthly rent (₱)", type: "number", step: "0.01", min: 0 }] : []),
+  { name: "status", label: "Condition", type: "select", options: [["in_use", "In use (occupied / vacant is automatic)"], ["maintenance", "Under maintenance"]] },
+];
+const supplierFields = [
+  { name: "supplier_name", label: "Supplier name" }, { name: "contact_number", label: "Contact number" }, { name: "address", label: "Address" },
+];
+const setStatus = async (id, status, message) => {
+  try { await api("PATCH", `/users/${id}/status`, { status }); toast(message); render(); } catch (ex) { toast(ex.message, true); }
+};
+
 const actions = {
-  addVendor:  (d) => DB.vendors.push({ id: nextId(DB.vendors), business: d.business, owner: d.owner, contact: d.contact, status: "Active" }),
-  assignStall: (d) => {
-    const stall = DB.stalls.find((s) => s.no === d.stall);
-    stall.status = "Occupied";
-    stall.vendor = DB.vendors.find((v) => v.business === d.vendor).id;
+  logout: () => logout(),
+
+  // Registrations
+  approve: (id) => setStatus(id, "active", "Approved. The vendor can now sign in."),
+  decline: (id) => confirm("Decline this registration? The account will be disabled.") && setStatus(id, "inactive", "Registration declined"),
+
+  // Vendors
+  addVendor: () => openForm({
+    title: "Register vendor", submit: "Register", done: "Vendor registered",
+    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, hint: "At least 8 characters" },
+      ...vendorFields],
+    onSubmit: (d) => api("POST", "/vendors", d),
+  }),
+  editVendor: (id) => openForm({
+    title: "Edit vendor", values: find("vendors", "vendor_id", id),
+    fields: [...vendorFields, { name: "status", label: "Status", type: "select", options: opts(["active", "suspended"]) }],
+    onSubmit: (d) => api("PATCH", `/vendors/${id}`, d),
+  }),
+
+  // Stalls
+  addStall: () => openForm({
+    title: "Add stall", submit: "Add", done: "Stall added", fields: stallFields(true).slice(0, 4),
+    onSubmit: (d) => api("POST", "/stalls", d),
+  }),
+  editStall: (id) => {
+    const s = find("stalls", "stall_id", id);
+    openForm({
+      title: `Edit stall ${s.stall_number}`, values: { ...s, status: s.status === "maintenance" ? "maintenance" : "in_use" },
+      fields: stallFields(role() === "admin"), onSubmit: (d) => api("PATCH", `/stalls/${id}`, d),
+    });
   },
-  recordPayment: (d) => { DB.payments.find((p) => p.id === parseInt(d.payment)).status = "Paid"; },
-  addProduct: (d) => DB.products.push({ vendor: ME, name: d.name, category: d.category, price: +d.price, stock: +d.stock, supplier: supplierIdByName(d.supplier) }),
-  addSupplier: (d) => DB.suppliers.push({ id: nextId(DB.suppliers), name: d.name, contact: d.contact, address: d.address, status: "Active" }),
-  addInspection: (d) => DB.inspections.push({ id: nextId(DB.inspections), stall: d.stall, date: new Date().toISOString().slice(0, 10), type: d.type, result: d.result, inspector: "Insp. Ramos" }),
-  addRequest: (d) => DB.maintenance.push({ id: nextId(DB.maintenance), stall: d.stall, vendor: ME, issue: d.issue, status: "Open" }),
+  stallVendor: (id) => {
+    const s = find("stalls", "stall_id", id);
+    openForm({
+      title: `Who rents stall ${s.stall_number}?`, values: { vendor_id: s.vendor_id ?? "", start_date: today() },
+      fields: [{ name: "vendor_id", label: "Vendor", type: "select", required: false, options: [["", "— Nobody (vacant) —"], ...vendorOptions()] },
+        { name: "start_date", label: "Start date", type: "date", hint: "The current vendor's assignment ends today." }],
+      onSubmit: (d) => api("PUT", `/stalls/${id}/vendor`, d),
+    });
+  },
+
+  // Payments
+  generate: () => openForm({
+    title: "Create monthly bills", submit: "Create bills",
+    values: { month: today().slice(0, 7) },
+    fields: [{ name: "month", label: "Billing month", type: "month", hint: "One bill per rented stall. Running it twice is safe." }],
+    onSubmit: async (d) => {
+      const r = await api("POST", "/payments/generate", { month: d.month + "-01" });
+      return `${r.created} new bill(s) created`;
+    },
+  }),
+  cash: (id) => {
+    const p = find("payments", "payment_id", id);
+    const balance = (Number(p.amount_due) - Number(p.amount_paid)).toFixed(2);
+    openForm({
+      title: `Cash payment · ${p.business_name} · ${month(p.billing_month)}`, submit: "Record payment", done: "Payment recorded",
+      values: { amount: balance },
+      fields: [{ name: "amount", label: `Amount received (balance ${peso(balance)})`, type: "number", step: "0.01", min: "0.01", max: balance }],
+      onSubmit: (d) => api("POST", `/payments/${id}/cash`, d),
+    });
+  },
+  pay: async (id, el) => {
+    el.disabled = true;
+    el.textContent = "Opening PayMongo…";
+    try {
+      const { checkoutUrl } = await api("POST", `/my/payments/${id}/checkout`);
+      location.href = checkoutUrl;
+    } catch (ex) {
+      toast(ex.message, true);
+      render();
+    }
+  },
+
+  // Products (admin)
+  addProduct: () => openForm({
+    title: "Add product to catalog", submit: "Add", done: "Product added",
+    fields: [{ name: "product_name", label: "Product name" }, { name: "category", label: "Category" }, { name: "unit", label: "Unit (kg, bundle, pc…)" }],
+    onSubmit: (d) => api("POST", "/products", d),
+  }),
+  editProduct: (id) => openForm({
+    title: "Edit product", values: find("catalog", "product_id", id),
+    fields: [{ name: "product_name", label: "Product name" }, { name: "category", label: "Category" }, { name: "unit", label: "Unit" }],
+    onSubmit: (d) => api("PATCH", `/products/${id}`, d),
+  }),
+  addSupplier: () => openForm({
+    title: "Add supplier", submit: "Add", done: "Supplier added", fields: supplierFields,
+    onSubmit: (d) => api("POST", "/suppliers", d),
+  }),
+  editSupplier: (id) => openForm({
+    title: "Edit supplier", values: find("suppliers", "supplier_id", id),
+    fields: [...supplierFields, { name: "status", label: "Status", type: "select", options: opts(["active", "inactive"]) }],
+    onSubmit: (d) => api("PATCH", `/suppliers/${id}`, d),
+  }),
+
+  // Products (vendor)
+  addMyProduct: () => {
+    const { products, suppliers } = cache.catalog;
+    openForm({
+      title: "Add product", submit: "Add", done: "Product added",
+      extra: `<datalist id="catalogList">${products.map((p) => `<option value="${esc(p.product_name)}">`).join("")}</datalist>`,
+      fields: [
+        { name: "product_name", label: "Product", list: "catalogList", hint: "Pick from the list or type a new product" },
+        { name: "category", label: "Category", required: false }, { name: "unit", label: "Unit (kg, bundle, pc…)", required: false },
+        { name: "selling_price", label: "Price (₱)", type: "number", step: "0.01", min: 0 },
+        { name: "stock_quantity", label: "Stock", type: "number", step: 1, min: 0 },
+        { name: "supplier_id", label: "Supplier", type: "select", required: false, options: [["", "— None —"], ...suppliers.map((s) => [s.supplier_id, s.supplier_name])] },
+      ],
+      onInput: (form, e) => {   // known product -> fill in its category and unit
+        if (e.target.name !== "product_name") return;
+        const match = products.find((p) => p.product_name.toLowerCase() === e.target.value.trim().toLowerCase());
+        if (match) { form.category.value = match.category; form.unit.value = match.unit; }
+      },
+      onSubmit: (d) => api("POST", "/my/products", d),
+    });
+  },
+  editMyProduct: (id) => {
+    const p = find("myProducts", "vendor_product_id", id);
+    openForm({
+      title: `Edit ${p.product_name}`, values: { ...p, supplier_id: p.supplier_id ?? "" },
+      fields: [
+        { name: "selling_price", label: `Price (₱ per ${p.unit})`, type: "number", step: "0.01", min: 0 },
+        { name: "stock_quantity", label: "Stock", type: "number", step: 1, min: 0 },
+        { name: "supplier_id", label: "Supplier", type: "select", required: false,
+          options: [["", "— None —"], ...cache.catalog.suppliers.map((s) => [s.supplier_id, s.supplier_name])] },
+      ],
+      onSubmit: (d) => api("PATCH", `/my/products/${id}`, d),
+    });
+  },
+  removeMyProduct: async (id) => {
+    const p = find("myProducts", "vendor_product_id", id);
+    if (!confirm(`Remove ${p.product_name} from your products?`)) return;
+    try { await api("DELETE", `/my/products/${id}`); toast("Product removed"); render(); } catch (ex) { toast(ex.message, true); }
+  },
+
+  // Inspections
+  addInspection: async () => {
+    if (!cache.stalls) cache.stalls = await get("/stalls");
+    openForm({
+      title: "Record inspection", submit: "Save", done: "Inspection recorded",
+      fields: [
+        { name: "stall_id", label: "Stall", type: "select", options: cache.stalls.map((s) => [s.stall_id, s.stall_number]) },
+        { name: "inspection_type", label: "Type", type: "select", options: INSPECTION_TYPES.map((t) => [t, t]) },
+        { name: "result", label: "Result", type: "select", options: opts(["passed", "failed"]) },
+        { name: "remarks", label: "Remarks", type: "textarea", required: false, wide: true },
+      ],
+      onSubmit: (d) => api("POST", "/inspections", d),
+    });
+  },
+  editInspection: (id) => {
+    const i = find("inspections", "inspection_id", id);
+    openForm({
+      title: `Edit inspection · stall ${i.stall_number}`, values: i,
+      fields: [
+        { name: "inspection_type", label: "Type", type: "select", options: withCurrent(INSPECTION_TYPES, i.inspection_type).map((t) => [t, t]) },
+        { name: "result", label: "Result", type: "select", options: opts(["passed", "failed"]) },
+        { name: "remarks", label: "Remarks", type: "textarea", required: false, wide: true },
+      ],
+      onSubmit: (d) => api("PATCH", `/inspections/${id}`, d),
+    });
+  },
+
+  // Maintenance (vendor)
+  addRequest: () => openForm({
+    title: "Report a problem", submit: "Send", done: "Request sent",
+    fields: [{ name: "stall_id", label: "Stall", type: "select", options: cache.myStalls.map((s) => [s.stall_id, s.stall_number]) },
+      { name: "issue", label: "What is the problem?", type: "textarea", wide: true }],
+    onSubmit: (d) => api("POST", "/my/requests", d),
+  }),
+  editRequest: (id) => openForm({
+    title: `Edit request #${id}`, values: find("requests", "request_id", id),
+    fields: [{ name: "issue", label: "What is the problem?", type: "textarea", wide: true }],
+    onSubmit: (d) => api("PATCH", `/my/requests/${id}`, d),
+  }),
+
+  // Profile (vendor)
+  editProfile: async () => {
+    const me = await get("/my/profile");
+    openForm({
+      title: "Edit profile", values: me,
+      fields: [
+        { name: "avatar", label: "Profile picture", type: "image", required: false, round: true, w: 320, h: 320, max: 190000 },
+        { name: "cover", label: "Cover photo", type: "image", required: false, w: 1200, h: 400, max: 380000 },
+        { name: "business_name", label: "Business name" }, { name: "contact_number", label: "Contact number" },
+        { name: "address", label: "Address", wide: true },
+        { name: "bio", label: "About your business", type: "textarea", required: false, wide: true, max: 1000 },
+      ],
+      onSubmit: async (d) => { await api("PUT", "/my/profile", d); session.avatar = d.avatar; showWho(); },
+    });
+  },
+
+  // Accounts (admin)
+  addUser: () => openForm({
+    title: "Add admin / inspector account", submit: "Create", done: "Account created",
+    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, hint: "At least 8 characters" },
+      { name: "first_name", label: "First name" }, { name: "last_name", label: "Last name" }, { name: "email", label: "Email", type: "email" },
+      { name: "role", label: "Role", type: "select", options: [["staff", ROLE_NAMES.staff], ["admin", ROLE_NAMES.admin]] }],
+    onSubmit: (d) => api("POST", "/users", d),
+  }),
+  editUser: (id) => {
+    const u = find("users", "user_id", id);
+    openForm({
+      title: `Edit account @${u.username}`, values: u,
+      fields: [{ name: "first_name", label: "First name" }, { name: "last_name", label: "Last name" }, { name: "email", label: "Email", type: "email" },
+        { name: "status", label: "Status", type: "select", options: opts(["active", "inactive", "pending"]), hint: "Only active accounts can sign in." },
+        { name: "password", label: "New password", type: "password", minlength: 8, required: false, hint: "Leave empty to keep the current password" }],
+      onSubmit: (d) => api("PATCH", `/users/${id}`, d),
+    });
+  },
+
+  // My account
+  changePassword: () => openForm({
+    title: "Change password", submit: "Change password", done: "Password changed",
+    fields: [{ name: "current_password", label: "Current password", type: "password" },
+      { name: "new_password", label: "New password", type: "password", minlength: 8, hint: "At least 8 characters" },
+      { name: "confirm", label: "Type the new password again", type: "password" }],
+    onSubmit: (d) => {
+      if (d.new_password !== d.confirm) throw new Error("The new passwords do not match.");
+      return api("PATCH", "/me/password", d);
+    },
+  }),
 };
 
-// ---------- Rendering & events ----------
-function showToast(message) {
-  const toast = $("t");
-  toast.textContent = "✓ " + message;
-  toast.classList.add("on");
-  setTimeout(() => toast.classList.remove("on"), 2200);
-}
-
-function render() {
-  if (!NAV[state.role].includes(state.view)) state.view = "dashboard";
-  $("nav").innerHTML = NAV[state.role].map((v) =>
-    `<button class="${v === state.view ? "on" : ""}" data-view="${v}"><span>${ICONS[v]}</span>${v[0].toUpperCase() + v.slice(1)}</button>`).join("");
-  $("main").innerHTML = views[state.view]();
-  scrollTo(0, 0);
-}
-
-$("role").onchange = (e) => { state.role = e.target.value; render(); };
-document.body.onclick = (e) => {
-  const target = e.target.closest("[data-view]");
-  if (target) { state.view = target.dataset.view; render(); }
+// Inline status dropdowns
+const changes = {
+  requestStatus: async (id, el) => {
+    try { await api("PATCH", `/maintenance/${id}/status`, { status: el.value }); toast("Status updated"); } catch (ex) { toast(ex.message, true); render(); }
+  },
 };
-$("main").oninput = (e) => {
+
+// ---------- Rendering ----------
+let renderCount = 0;
+let shownRoute = "";
+async function render() {
+  const [hashPage, arg] = location.hash.slice(1).split("/");
+  const page = canOpen(hashPage) ? hashPage : homePage();
+  const menuPage = page === "profile" && arg && Number(arg) !== session.user.vendor_id ? "directory" : page;
+  $("nav").innerHTML = Object.keys(PAGES).filter((p) => PAGES[p].roles.includes(role())).map((p) =>
+    `<a href="#${p}" class="${p === menuPage ? "on" : ""}"><span>${PAGES[p].icon}</span>${PAGES[p].label}</a>`).join("");
+  $("pageTitle").textContent = page === "profile" && arg ? "Vendor profile" : PAGES[page].label;
+  document.title = `${$("pageTitle").textContent} · PalengkeLink`;
+  const main = $("main");
+  const mine = ++renderCount;
+  if (shownRoute !== page + arg) {   // a new page: show a skeleton; a refresh of the same page keeps it on screen
+    main.innerHTML = `<div class="skeleton"><i></i><i></i><i></i></div>`;
+    shownRoute = page + arg;
+    scrollTo(0, 0);
+  }
+  try {
+    const html = await views[page](arg);
+    if (mine === renderCount) main.innerHTML = `<div class="page">${html}</div>`;
+  } catch (ex) {
+    if (mine === renderCount && session.token) main.innerHTML = `<div class="card err">⚠️ ${esc(ex.message)}</div>`;
+  }
+}
+
+function showWho() {
+  const u = session.user;
+  const name = `${u.first_name} ${u.last_name}`;
+  $("whoAv").innerHTML = avatar(name, session.avatar, "sm");
+  $("topAv").innerHTML = avatar(name, session.avatar, "sm");
+  $("whoName").textContent = name;
+  $("whoRole").textContent = ROLE_NAMES[u.role];
+  $("today").textContent = new Date().toLocaleDateString("en-PH", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+}
+
+function start() {
+  $("auth").hidden = true;
+  $("app").hidden = false;
+  showWho();
+  if (role() === "vendor") get("/my/profile").then((p) => { session.avatar = p.avatar; showWho(); }).catch(() => {});
+  // Back from PayMongo? Ask the server to confirm the payment with PayMongo, then show the bills.
+  const params = new URLSearchParams(location.search);
+  const paid = params.get("paid");
+  if (paid === null) return render();
+  history.replaceState(null, "", location.pathname + location.hash);
+  if (paid !== "1") { toast("Payment cancelled.", true); return render(); }
+  const pid = Number(params.get("pid"));
+  if (!pid || role() !== "vendor") return render();
+  toast("Confirming your payment with PayMongo…");
+  api("POST", `/my/payments/${pid}/confirm`)
+    .then((r) => toast(r.paid ? "Payment received. Salamat!" : "PayMongo has not confirmed the payment yet. Refresh in a minute.", !r.paid))
+    .catch((ex) => toast(ex.message, true))
+    .finally(render);
+}
+
+function logout(message) {
+  session.token = session.user = session.avatar = null;
+  store.set("pl_token", null);
+  $("app").hidden = true;
+  $("main").innerHTML = "";
+  shownRoute = "";
+  if ($("dlg").open) $("dlg").close();
+  showAuth("login", message);
+}
+
+// ---------- Sign in / Register / Forgot / Reset ----------
+let resetToken = null;
+function showAuth(panel, message) {
+  $("auth").hidden = false;
+  document.querySelectorAll("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== panel; });
+  document.querySelectorAll("#authTabs button").forEach((b) => b.classList.toggle("on", b.dataset.auth === panel));
+  $("authTabs").hidden = !["login", "register"].includes(panel);
+  const err = document.querySelector(`[data-panel="${panel}"] .err`);
+  if (err) { err.textContent = message || ""; err.hidden = !message; }
+  document.querySelector(`[data-panel="${panel}"] input`)?.focus();
+}
+function showDone(title, text) {
+  $("doneTitle").textContent = title;
+  $("doneText").textContent = text;
+  showAuth("done");
+}
+
+/** Wire an auth form: send() does the work; errors show inside the form. */
+function authForm(id, send) {
+  const form = $(id);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const err = form.querySelector(".err");
+    const button = form.querySelector("button.big");
+    const data = Object.fromEntries(new FormData(form));
+    button.disabled = true;
+    err.hidden = true;
+    try {
+      await send(data, form);
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.hidden = false;
+    } finally { button.disabled = false; }
+  };
+}
+
+authForm("loginForm", async (d, form) => {
+  const { token, user } = await api("POST", "/auth/login", { username: d.username.trim(), password: d.password });
+  session.token = token;
+  session.user = user;
+  store.set("pl_token", token);
+  form.reset();
+  start();
+});
+authForm("registerForm", async (d, form) => {
+  if (d.password !== d.confirm) throw new Error("The passwords do not match.");
+  await api("POST", "/auth/register", d);
+  form.reset();
+  showDone("Registration sent!", "Salamat! The market office will review your registration. You can sign in as soon as it is approved.");
+});
+authForm("forgotForm", async (d, form) => {
+  await api("POST", "/auth/forgot", { email: d.email.trim() });
+  form.reset();
+  showDone("Check your email", `If an account uses ${d.email.trim()}, we sent it a link to reset the password. The link works for 30 minutes.`);
+});
+authForm("resetForm", async (d, form) => {
+  if (d.new_password !== d.confirm) throw new Error("The passwords do not match.");
+  await api("POST", "/auth/reset", { token: resetToken, new_password: d.new_password });
+  form.reset();
+  resetToken = null;
+  history.replaceState(null, "", location.pathname);
+  showDone("Password changed", "You can now sign in with your new password.");
+});
+
+// ---------- Events ----------
+document.body.addEventListener("click", (e) => {
+  const auth = e.target.closest("[data-auth]");
+  if (auth) { e.preventDefault(); return showAuth(auth.dataset.auth); }
+  const eye = e.target.closest("[data-eye]");
+  if (eye) {
+    const input = eye.previousElementSibling;
+    input.type = input.type === "password" ? "text" : "password";
+    return;
+  }
+  const el = e.target.closest("[data-act]");
+  if (el && actions[el.dataset.act]) actions[el.dataset.act](Number(el.dataset.id), el);
+});
+$("main").addEventListener("change", (e) => {
+  const el = e.target.closest("[data-change]");
+  if (el) changes[el.dataset.change](Number(el.dataset.id), el);
+});
+$("main").addEventListener("input", (e) => {
   if (!e.target.classList.contains("q")) return;
   const term = e.target.value.toLowerCase();
-  document.querySelectorAll("tr[data-r]").forEach((row) => {
-    row.style.display = row.textContent.toLowerCase().includes(term) ? "" : "none";
-  });
-};
-$("main").onsubmit = (e) => {
-  e.preventDefault();
-  const form = e.target;
-  actions[form.dataset.action](Object.fromEntries(new FormData(form)));
-  render();
-  showToast(form.dataset.msg + " saved");
-};
+  $("main").querySelectorAll("[data-r]").forEach((row) => { row.hidden = !row.textContent.toLowerCase().includes(term); });
+});
+window.addEventListener("hashchange", () => session.user && render());
 
-render();
+// ---------- Start ----------
+(async () => {
+  if (location.hash.startsWith("#reset/")) {   // link from the "forgot password" email
+    resetToken = location.hash.slice("#reset/".length);
+    session.token = null;
+    store.set("pl_token", null);
+    return showAuth("reset");
+  }
+  if (!session.token) return showAuth("login");
+  try {
+    session.user = await get("/me");
+    start();
+  } catch { logout(); }
+})();

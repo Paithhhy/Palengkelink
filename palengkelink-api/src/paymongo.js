@@ -1,27 +1,40 @@
-// PayMongo helper: create a hosted Checkout Session and verify webhook signatures.
+// PayMongo helper: create a hosted Checkout Session, read it back, and verify webhook signatures.
 const crypto = require("crypto");
 const { HttpError } = require("./errors");
 
+const headers = () => ({
+  accept: "application/json",
+  "content-type": "application/json",
+  authorization: "Basic " + Buffer.from(`${process.env.PAYMONGO_SECRET_KEY}:`).toString("base64"),
+});
+
 /** Create a checkout page. amountCentavos: PayMongo uses the smallest unit (PHP 1,500.00 = 150000). */
-async function createCheckoutSession({ amountCentavos, name, referenceNumber }) {
-  const auth = Buffer.from(`${process.env.PAYMONGO_SECRET_KEY}:`).toString("base64");
+async function createCheckoutSession({ amountCentavos, name, referenceNumber, appUrl }) {
   const res = await fetch("https://api.paymongo.com/v1/checkout_sessions", {
     method: "POST",
-    headers: { accept: "application/json", "content-type": "application/json", authorization: `Basic ${auth}` },
+    headers: headers(),
     body: JSON.stringify({
       data: { attributes: {
         line_items: [{ currency: "PHP", amount: amountCentavos, name, quantity: 1 }],
         payment_method_types: (process.env.PAYMONGO_METHODS || "gcash,card").split(","),
         reference_number: referenceNumber,
         description: name,
-        success_url: `${process.env.APP_URL}/?paid=1`,
-        cancel_url: `${process.env.APP_URL}/?paid=0`,
+        success_url: `${appUrl}/?paid=1&pid=${referenceNumber}#payments`,   // pid lets the website confirm this bill on return
+        cancel_url: `${appUrl}/?paid=0#payments`,
       } },
     }),
   });
   const body = await res.json();
   if (!res.ok) { console.error("PayMongo error:", JSON.stringify(body)); throw new HttpError(502, "Could not start the online payment."); }
   return { id: body.data.id, checkoutUrl: body.data.attributes.checkout_url };
+}
+
+/** Read a checkout session straight from PayMongo (trusted: it comes from PayMongo with our secret key). */
+async function getCheckoutSession(id) {
+  const res = await fetch(`https://api.paymongo.com/v1/checkout_sessions/${encodeURIComponent(id)}`, { headers: headers() });
+  const body = await res.json();
+  if (!res.ok) { console.error("PayMongo error:", JSON.stringify(body)); throw new HttpError(502, "Could not check the payment with PayMongo."); }
+  return body.data;
 }
 
 /**
@@ -38,4 +51,4 @@ function verifyWebhook(rawBody, header, secret) {
   return given.length === expected.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
 }
 
-module.exports = { createCheckoutSession, verifyWebhook };
+module.exports = { createCheckoutSession, getCheckoutSession, verifyWebhook };

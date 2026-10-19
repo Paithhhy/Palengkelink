@@ -3,7 +3,8 @@
 BEGIN;
 
 -- Functions are private by default; later scripts GRANT EXECUTE to specific roles.
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+-- (No "IN SCHEMA" here: a per-schema REVOKE cannot remove PostgreSQL's built-in EXECUTE-to-PUBLIC default.)
+ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON ROUTINES FROM PUBLIC;
 
 CREATE TABLE users (
   user_id       INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -16,9 +16,13 @@ const ALLOWED_ROLES = ["admin", "staff", "vendor", "gateway"];
 async function asUser(user, work) {
   if (!ALLOWED_ROLES.includes(user.role)) throw new Error("Unknown role");
   return prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(`SET LOCAL ROLE app_${user.role}`);   // value comes from the fixed list above
-    await tx.$executeRaw`SELECT set_config('app.current_user_id', ${String(user.id ?? "")}, true)`;
+    // set_config('role', ..., true) is the same as SET LOCAL ROLE; doing both in one query saves a trip to the database.
+    await tx.$executeRaw`SELECT set_config('role', ${"app_" + user.role}, true),
+                                set_config('app.current_user_id', ${String(user.id ?? "")}, true)`;
     return work(tx);
+  }, {
+    maxWait: 15000,   // wait up to 15 s for a free connection (Neon may be waking up / far away); Prisma's default is 2 s
+    timeout: 20000,   // the whole transaction may take up to 20 s; default is 5 s
   });
 }
 

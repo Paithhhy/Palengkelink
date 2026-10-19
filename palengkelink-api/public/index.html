@@ -1,11 +1,112 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14532d">
 <title>PalengkeLink</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥬</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css"></head><body>
-<header><div class="top"><div class="logo">🥬 PalengkeLink<small>Public Market Vendor, Stall &amp; Supply Management</small></div>
-<label class="who">Signed in as<select id="role"><option value="admin">Admin / Market Manager</option><option value="staff">Market Staff / Inspector</option><option value="vendor">Vendor (Aling Nena)</option></select></label></div></header>
-<nav id="nav"></nav><main id="main"></main><div id="t"></div>
-<script src="data.js"></script>
+
+<!-- ===== Sign in / Register / Forgot / Reset ===== -->
+<section id="auth" class="auth" hidden>
+  <div class="auth-hero">
+    <div class="brand light">🥬 PalengkeLink</div>
+    <h1>Your public market,<br><span>organized.</span></h1>
+    <p>Stalls, rent, products and suppliers in one place, for market managers, inspectors and vendors.</p>
+    <ul class="perks"><li>🏪 Stall &amp; vendor records</li><li>💳 Pay rent with GCash or card</li><li>🧺 Show your products to the market</li></ul>
+  </div>
+
+  <div class="auth-card">
+    <div class="brand">🥬 PalengkeLink</div>
+
+    <div class="tabs" id="authTabs">
+      <button type="button" data-auth="login" class="on">Sign in</button>
+      <button type="button" data-auth="register">Register</button>
+    </div>
+
+    <form id="loginForm" class="auth-form" data-panel="login">
+      <h2>Welcome back 👋</h2>
+      <p class="mut">Sign in to manage your stall and payments.</p>
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<span class="pw"><input name="password" type="password" autocomplete="current-password" required>
+        <button type="button" class="eye" data-eye aria-label="Show password">👁</button></span></label>
+      <a href="#" class="link right" data-auth="forgot">Forgot password?</a>
+      <p class="err" hidden></p>
+      <button class="big">Sign in</button>
+      <p class="mut center">New vendor? <a href="#" class="link" data-auth="register">Create an account</a></p>
+    </form>
+
+    <form id="registerForm" class="auth-form" data-panel="register" hidden>
+      <h2>Register as a vendor</h2>
+      <p class="mut">The market office will review your registration before you can sign in.</p>
+      <div class="two">
+        <label>First name<input name="first_name" autocomplete="given-name" required></label>
+        <label>Last name<input name="last_name" autocomplete="family-name" required></label>
+      </div>
+      <label>Business / stall name<input name="business_name" required></label>
+      <div class="two">
+        <label>Mobile number<input name="contact_number" type="tel" autocomplete="tel" placeholder="09XX-XXX-XXXX" required></label>
+        <label>Email<input name="email" type="email" autocomplete="email" required></label>
+      </div>
+      <label>Address<input name="address" autocomplete="street-address" required></label>
+      <div class="two">
+        <label>Username<input name="username" autocomplete="username" pattern="[A-Za-z0-9._\-]{3,40}" title="3-40 letters, numbers, dots, dashes or underscores" required></label>
+        <label>Password<span class="pw"><input name="password" type="password" autocomplete="new-password" minlength="8" required>
+          <button type="button" class="eye" data-eye aria-label="Show password">👁</button></span></label>
+      </div>
+      <label>Confirm password<input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+      <p class="err" hidden></p>
+      <button class="big">Create account</button>
+      <p class="mut center">Already registered? <a href="#" class="link" data-auth="login">Sign in</a></p>
+    </form>
+
+    <form id="forgotForm" class="auth-form" data-panel="forgot" hidden>
+      <h2>Forgot your password?</h2>
+      <p class="mut">Enter the email of your account and we will send you a link to choose a new password.</p>
+      <label>Email<input name="email" type="email" autocomplete="email" required></label>
+      <p class="err" hidden></p>
+      <button class="big">Send reset link</button>
+      <p class="mut center"><a href="#" class="link" data-auth="login">← Back to sign in</a></p>
+    </form>
+
+    <form id="resetForm" class="auth-form" data-panel="reset" hidden>
+      <h2>Choose a new password</h2>
+      <p class="mut">At least 8 characters.</p>
+      <label>New password<span class="pw"><input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+        <button type="button" class="eye" data-eye aria-label="Show password">👁</button></span></label>
+      <label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+      <p class="err" hidden></p>
+      <button class="big">Save new password</button>
+    </form>
+
+    <div class="auth-form done" data-panel="done" hidden>
+      <div class="done-icon">✅</div><h2 id="doneTitle"></h2><p class="mut" id="doneText"></p>
+      <button type="button" class="big" data-auth="login">Back to sign in</button>
+    </div>
+  </div>
+  <small class="credit">Photo: Antonio Araujo / Unsplash</small>
+</section>
+
+<!-- ===== The app (after login) ===== -->
+<div id="app" class="shell" hidden>
+  <aside class="side">
+    <div class="brand">🥬 PalengkeLink</div>
+    <nav id="nav"></nav>
+    <div class="side-user"><span id="whoAv"></span><span class="who-txt"><b id="whoName"></b><small id="whoRole"></small></span>
+      <button class="icon-btn" data-act="logout" title="Log out">⏻</button></div>
+  </aside>
+  <div class="content">
+    <header class="topbar">
+      <div><h1 id="pageTitle"></h1><small class="mut" id="today"></small></div>
+      <div class="top-right"><a href="#account" class="top-av" id="topAv" title="My account"></a>
+        <button class="icon-btn mob" data-act="logout" title="Log out">⏻</button></div>
+    </header>
+    <main id="main"></main>
+  </div>
+</div>
+
+<dialog id="dlg"></dialog>
+<div id="t"></div>
 <script src="app.js"></script>
 </body></html>

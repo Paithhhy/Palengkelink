@@ -19,8 +19,20 @@ function intParam(value) {
   return n;
 }
 
+/** Read a number from the request body, e.g. { amount: 1500 } */
+function num(value, name) {
+  const n = Number(value);
+  if (value === null || value === "" || !Number.isFinite(n)) throw new HttpError(400, `Invalid ${name}`);
+  return n;
+}
+
 function errorHandler(err, req, res, next) { // eslint-disable-line no-unused-vars
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+  if (err.type === "entity.too.large") return res.status(413).json({ error: "That is too large to upload." });
+  if (err.name === "PrismaClientInitializationError" || ["P1000", "P1001", "P1002"].includes(err.errorCode)) {   // wrong DATABASE_URL / password, or database asleep
+    console.error(err.message);
+    return res.status(503).json({ error: "Cannot reach the database. Check DATABASE_URL in .env." });
+  }
 
   const sqlState = err.meta?.code;                       // Postgres error code, e.g. 23503
   const raw = String(err.meta?.message || err.message || "");
@@ -36,4 +48,4 @@ function errorHandler(err, req, res, next) { // eslint-disable-line no-unused-va
   res.status(500).json({ error: "Something went wrong on the server." });
 }
 
-module.exports = { HttpError, wrap, need, intParam, errorHandler };
+module.exports = { HttpError, wrap, need, intParam, num, errorHandler };

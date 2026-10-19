@@ -1,10 +1,10 @@
 -- PalengkeLink | 005 | Sample data (same records as the website demo). Replace hashes with real bcrypt hashes.
 BEGIN;
 INSERT INTO users (username,password_hash,first_name,last_name,email,role) VALUES
- ('admin','$2a$10$HHu0HdNdjdnbuYmny2fTEuwQhyqAzGYCj/cfPnyYfJFivO0j3S6t6','Maria','Manager','admin@palengkelink.test','admin'),
- ('ramos','$2a$10$HHu0HdNdjdnbuYmny2fTEuwQhyqAzGYCj/cfPnyYfJFivO0j3S6t6','Jun','Ramos','ramos@palengkelink.test','staff'),
- ('nena','$2a$10$HHu0HdNdjdnbuYmny2fTEuwQhyqAzGYCj/cfPnyYfJFivO0j3S6t6','Nena','Santos','nena@palengkelink.test','vendor'),
- ('berto','$2a$10$HHu0HdNdjdnbuYmny2fTEuwQhyqAzGYCj/cfPnyYfJFivO0j3S6t6','Berto','Cruz','berto@palengkelink.test','vendor');
+ ('admin','REPLACE_BCRYPT','Maria','Manager','admin@palengkelink.test','admin'),
+ ('ramos','REPLACE_BCRYPT','Jun','Ramos','ramos@palengkelink.test','staff'),
+ ('nena','REPLACE_BCRYPT','Nena','Santos','nena@palengkelink.test','vendor'),
+ ('berto','REPLACE_BCRYPT','Berto','Cruz','berto@palengkelink.test','vendor');
 INSERT INTO vendors (user_id,business_name,contact_number,address) VALUES
  (3,'Nena’s Fresh Veggies','0917-555-0101','Cebu City'),(4,'Berto Meat Shop','0918-555-0102','Cebu City');
 INSERT INTO stalls (stall_number,section,stall_type,monthly_rent) VALUES

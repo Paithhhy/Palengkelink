@@ -13,6 +13,7 @@ END $$;
 GRANT app_admin, app_staff, app_vendor, app_gateway TO palengkelink_app;
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
+REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA public FROM PUBLIC;   -- only the GRANTs below may call functions
 
 -- Vendor-isolated views: Vendor A can never see Vendor B's rows.
 CREATE VIEW v_my_stalls WITH (security_barrier = true) AS
@@ -67,6 +68,7 @@ GRANT UPDATE (status) ON stalls TO app_staff;
 
 -- Vendor: only the isolated views + two self-service functions + PayMongo checkout start
 GRANT SELECT ON v_my_stalls, v_my_payments, v_my_products, v_my_requests TO app_vendor;
+GRANT EXECUTE ON FUNCTION fn_current_vendor_id() TO app_vendor;   -- the v_my_* views call it with the vendor's rights
 GRANT SELECT ON products TO app_vendor;
 GRANT SELECT (supplier_id, supplier_name) ON suppliers TO app_vendor;
 GRANT EXECUTE ON FUNCTION fn_vendor_add_product(int,int,numeric,int), fn_vendor_submit_request(int,text),
