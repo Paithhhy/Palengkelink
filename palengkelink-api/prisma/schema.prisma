@@ -1,0 +1,10 @@
+// Prisma only needs the connection here: the tables are created by database/*.sql.
+// Optional: run `npx prisma db pull` to generate models from the live tables for documentation.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
