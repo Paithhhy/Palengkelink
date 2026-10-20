@@ -72,3 +72,21 @@ exports.updateMyRequest = async (req, res) => {
   await run(req, (tx) => tx.$executeRaw`SELECT fn_vendor_update_request(${intParam(req.params.id)}::int, ${String(req.body.issue)}::text)`);
   res.json({ ok: true });
 };
+
+// ----- Supplier suggestions (the admin approves or declines them) -----
+exports.mySuggestions = async (req, res) =>
+  res.json(await run(req, (tx) => tx.$queryRaw`SELECT * FROM v_my_supplier_suggestions ORDER BY suggestion_id DESC`));
+
+exports.suggestSupplier = async (req, res) => {
+  const b = req.body;
+  need(b, ["supplier_name"]);
+  const [row] = await run(req, (tx) => tx.$queryRaw`SELECT fn_vendor_suggest_supplier(${String(b.supplier_name)}::text,
+    ${String(b.contact_number ?? "")}::text, ${String(b.address ?? "")}::text, ${String(b.supplies ?? "")}::text,
+    ${String(b.reason ?? "")}::text) AS suggestion_id`);
+  res.status(201).json(row);
+};
+
+exports.withdrawSuggestion = async (req, res) => {
+  await run(req, (tx) => tx.$executeRaw`SELECT fn_vendor_withdraw_suggestion(${intParam(req.params.id)}::int)`);
+  res.json({ ok: true });
+};

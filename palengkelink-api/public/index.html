@@ -69,11 +69,24 @@
 
     <form id="forgotForm" class="auth-form" data-panel="forgot" hidden>
       <h2>Forgot your password?</h2>
-      <p class="mut">Enter the email of your account and we will send you a link to choose a new password.</p>
+      <p class="mut">Enter the email of your account and we will send you a 6-digit verification code.</p>
       <label>Email<input name="email" type="email" autocomplete="email" required></label>
       <p class="err" hidden></p>
-      <button class="big">Send reset link</button>
+      <button class="big">Send verification code</button>
       <p class="mut center"><a href="#" class="link" data-auth="login">← Back to sign in</a></p>
+    </form>
+
+    <form id="codeForm" class="auth-form" data-panel="code" hidden>
+      <h2>Check your email ✉️</h2>
+      <p class="mut" id="codeText"></p>
+      <label>Verification code<input name="code" class="code-input" inputmode="numeric" autocomplete="one-time-code"
+        pattern="\s*\d{6}\s*" maxlength="7" placeholder="••••••" title="The 6 numbers from the email" required></label>
+      <label>New password<span class="pw"><input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+        <button type="button" class="eye" data-eye aria-label="Show password">👁</button></span></label>
+      <label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+      <p class="err" hidden></p>
+      <button class="big">Save new password</button>
+      <p class="mut center">No email? Check your spam folder, or <a href="#" class="link" data-auth="forgot">send a new code</a>.</p>
     </form>
 
     <form id="resetForm" class="auth-form" data-panel="reset" hidden>

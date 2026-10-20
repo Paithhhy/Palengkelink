@@ -96,18 +96,18 @@ exports.listStalls = async (req, res) =>
 
 exports.createStall = async (req, res) => {
   const b = req.body;
-  need(b, ["stall_number", "section", "stall_type", "monthly_rent"]);
-  const [row] = await run(req, (tx) => tx.$queryRaw`INSERT INTO stalls (stall_number, section, stall_type, monthly_rent)
-    VALUES (${text(b.stall_number)}, ${text(b.section)}, ${text(b.stall_type)}, ${num(b.monthly_rent, "monthly_rent")}::numeric) RETURNING stall_id`);
+  need(b, ["stall_number", "section", "monthly_rent"]);
+  const [row] = await run(req, (tx) => tx.$queryRaw`INSERT INTO stalls (stall_number, section, monthly_rent)
+    VALUES (${text(b.stall_number)}, ${text(b.section)}, ${num(b.monthly_rent, "monthly_rent")}::numeric) RETURNING stall_id`);
   res.status(201).json(row);
 };
 
-// Admin edits everything; staff may change section, type and maintenance status (see 007_features.sql).
+// Admin edits everything; staff may change section and maintenance status (see 007_features.sql).
 // status: "maintenance" or anything else = "in use" (then occupied/vacant follows the active assignment).
 exports.updateStall = async (req, res) => {
   const b = req.body;
   const id = intParam(req.params.id);
-  need(b, ["section", "stall_type", "status"]);
+  need(b, ["section", "status"]);
   const maintenance = b.status === "maintenance";
   await run(req, async (tx) => {
     if (req.user.role === "admin") {
@@ -115,7 +115,7 @@ exports.updateStall = async (req, res) => {
       await tx.$executeRaw`UPDATE stalls SET stall_number = ${text(b.stall_number)}, monthly_rent = ${num(b.monthly_rent, "monthly_rent")}::numeric
         WHERE stall_id = ${id}`;
     }
-    const n = await tx.$executeRaw`UPDATE stalls SET section = ${text(b.section)}, stall_type = ${text(b.stall_type)},
+    const n = await tx.$executeRaw`UPDATE stalls SET section = ${text(b.section)},
       status = CASE WHEN ${maintenance} THEN 'maintenance'
                     WHEN EXISTS (SELECT 1 FROM stall_assignments a WHERE a.stall_id = ${id} AND a.status = 'active') THEN 'occupied'
                     ELSE 'vacant' END
@@ -189,6 +189,35 @@ exports.updateSupplier = async (req, res) => {
   res.json({ ok: true });
 };
 
+// ----- Supplier suggestions from vendors -----
+exports.listSuggestions = async (req, res) =>
+  res.json(await run(req, (tx) => tx.$queryRaw`
+    SELECT g.*, v.business_name
+      FROM supplier_suggestions g JOIN vendors v USING (vendor_id)
+     ORDER BY (g.status = 'pending') DESC, g.suggestion_id DESC`));
+
+// PATCH /suggestions/:id  { status: "approved", supplier_name, contact_number, address, admin_note? }
+//                      or { status: "declined", admin_note? }
+// Approving adds the supplier and marks the suggestion in ONE transaction: both are saved or neither.
+exports.reviewSuggestion = async (req, res) => {
+  const b = req.body;
+  const id = intParam(req.params.id);
+  need(b, ["status"]);
+  if (!["approved", "declined"].includes(b.status)) throw new HttpError(400, "Status must be approved or declined.");
+  await run(req, async (tx) => {
+    let supplierId = null;
+    if (b.status === "approved") {
+      need(b, ["supplier_name", "contact_number", "address"]);
+      [{ supplier_id: supplierId }] = await tx.$queryRaw`INSERT INTO suppliers (supplier_name, contact_number, address)
+        VALUES (${text(b.supplier_name)}, ${text(b.contact_number)}, ${text(b.address)}) RETURNING supplier_id`;
+    }
+    const n = await tx.$executeRaw`UPDATE supplier_suggestions SET status = ${b.status}, admin_note = ${text(b.admin_note) || null},
+      supplier_id = ${supplierId}, reviewed_at = now() WHERE suggestion_id = ${id} AND status = 'pending'`;
+    if (!n) throw new HttpError(404, "This suggestion was not found or was already reviewed.");
+  });
+  res.json({ ok: true });
+};
+
 // ----- Inspections (inspector = the logged-in staff member) -----
 exports.listInspections = async (req, res) =>
   res.json(await run(req, (tx) => tx.$queryRaw`SELECT * FROM v_inspections ORDER BY inspection_date DESC, inspection_id DESC`));
@@ -223,6 +252,17 @@ exports.setRequestStatus = async (req, res) => {
   res.json({ ok: true });
 };
 
-// ----- Audit log (written only by database triggers) -----
+// ----- Activity log (admin only; written only by database triggers) -----
+// label = a readable name for the changed record; changed = which columns an UPDATE changed.
+// The full old/new JSON is not sent: vendor rows hold base64 pictures that would make the list very heavy.
 exports.auditLog = async (req, res) =>
-  res.json(await run(req, (tx) => tx.$queryRaw`SELECT log_id, user_id, table_name, record_id, action, logged_at FROM audit_logs ORDER BY log_id DESC LIMIT 100`));
+  res.json(await run(req, (tx) => tx.$queryRaw`
+    SELECT l.log_id, l.table_name, l.record_id, l.action, l.logged_at, u.username, u.first_name || ' ' || u.last_name AS actor,
+           COALESCE(l.new_value, l.old_value) ->> CASE l.table_name
+             WHEN 'users' THEN 'username' WHEN 'vendors' THEN 'business_name' WHEN 'stalls' THEN 'stall_number'
+             WHEN 'maintenance_requests' THEN 'issue' WHEN 'inspections' THEN 'inspection_type'
+             WHEN 'rental_payments' THEN 'billing_month' WHEN 'supplier_suggestions' THEN 'supplier_name' ELSE '' END AS label,
+           (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(l.new_value) AS k
+             WHERE l.action = 'UPDATE' AND l.new_value -> k IS DISTINCT FROM l.old_value -> k) AS changed
+      FROM audit_logs l LEFT JOIN users u ON u.user_id = l.user_id
+     ORDER BY l.log_id DESC LIMIT 200`));

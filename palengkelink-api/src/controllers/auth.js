@@ -19,6 +19,8 @@ function checkNewPassword(password) {
 }
 
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
+// 6-digit codes are easy to guess offline, so they are hashed with a server secret (HMAC) instead of plain SHA-256.
+const codeHash = (code) => crypto.createHmac("sha256", process.env.JWT_SECRET).update(code).digest("hex");
 const appUrl = (req) => process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
 
 // POST /api/auth/login  { username, password }  ->  { token, user }
@@ -58,31 +60,46 @@ exports.register = async (req, res) => {
   res.status(201).json({ ok: true });
 };
 
-// POST /api/auth/forgot  { email }  -> always the same answer, so nobody can test which emails are registered
+// POST /api/auth/forgot  { email }  -> always the same answer, so nobody can test which emails are registered.
+// The email has a 6-digit code AND a link; either one resets the password (once, within 30 minutes).
 exports.forgot = async (req, res) => {
   need(req.body, ["email"]);
   const token = crypto.randomBytes(32).toString("base64url");
-  const [u] = await prisma.$queryRaw`SELECT * FROM fn_create_password_reset(${String(req.body.email)}, ${sha256(token)})`;
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+  const [u] = await prisma.$queryRaw`SELECT * FROM fn_create_password_reset(${String(req.body.email)}, ${sha256(token)}, ${codeHash(code)})`;
   if (u) {
     const link = `${appUrl(req)}/#reset/${token}`;
     sendMail({
       to: u.email,
-      subject: "PalengkeLink: reset your password",
-      text: `Hi ${u.first_name},\n\nOpen this link to choose a new password (it works once, for 30 minutes):\n${link}\n\nIf you did not ask for this, you can ignore this email.`,
-      html: `<p>Hi ${u.first_name.replace(/[<>&]/g, "")},</p><p>Click the button to choose a new password. The link works once, for 30 minutes.</p>
+      subject: `PalengkeLink: your verification code is ${code}`,
+      text: `Hi ${u.first_name},\n\nYour verification code is: ${code}\n\nType it on the "Forgot password" page, or open this link to choose a new password:\n${link}\n\nThe code and the link work once, for 30 minutes.\nIf you did not ask for this, you can ignore this email.`,
+      html: `<p>Hi ${u.first_name.replace(/[<>&]/g, "")},</p><p>Your verification code is:</p>
+        <p style="font-size:30px;font-weight:800;letter-spacing:8px;margin:8px 0 16px">${code}</p>
+        <p>Type it on the "Forgot password" page, or click the button to choose a new password.</p>
         <p><a href="${link}" style="background:#1f8a4c;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Reset my password</a></p>
-        <p style="color:#666;font-size:13px">If you did not ask for this, you can ignore this email.</p>`,
+        <p style="color:#666;font-size:13px">The code and the link work once, for 30 minutes. If you did not ask for this, you can ignore this email.</p>`,
     }).catch((e) => console.error("Could not send the reset email:", e.message));
   }
   res.json({ ok: true });
 };
 
-// POST /api/auth/reset  { token, new_password }
+// POST /api/auth/reset  { token, new_password }          (link from the email)
+//                   or  { email, code, new_password }    (6-digit code from the email)
 exports.reset = async (req, res) => {
-  need(req.body, ["token", "new_password"]);
+  need(req.body, ["new_password"]);
   checkNewPassword(req.body.new_password);
   const hash = await bcrypt.hash(String(req.body.new_password), 10);
-  await prisma.$executeRaw`SELECT fn_reset_password(${sha256(String(req.body.token))}, ${hash})`;
+  if (req.body.token) {
+    await prisma.$executeRaw`SELECT fn_reset_password(${sha256(String(req.body.token))}, ${hash})`;
+    return res.json({ ok: true });
+  }
+  need(req.body, ["email", "code"]);
+  const code = String(req.body.code).replace(/\s/g, "");
+  if (!/^\d{6}$/.test(code)) throw new HttpError(400, "The code has 6 numbers.");
+  const [{ result }] = await prisma.$queryRaw`SELECT fn_reset_password_code(${String(req.body.email)}, ${codeHash(code)}, ${hash}) AS result`;
+  if (result === "wrong") throw new HttpError(400, "That code is wrong. Please check the email and try again.");
+  if (result === "locked") throw new HttpError(400, "Too many wrong codes. Please request a new code.");
+  if (result !== "ok") throw new HttpError(400, "This code has expired. Please request a new one.");
   res.json({ ok: true });
 };
 
