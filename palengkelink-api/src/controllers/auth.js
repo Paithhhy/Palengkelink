@@ -34,18 +34,27 @@ exports.login = async (req, res) => {
   res.json({ token, user: await me(user) });
 };
 
-// POST /api/auth/register  -> vendor account in "pending" status until an admin approves it
+// POST /api/auth/register  { role: "vendor" | "staff", ... }  -> account in "pending" status until an admin approves it.
+// Only vendors and inspectors (staff) can register themselves; admin accounts are made by an admin.
 exports.register = async (req, res) => {
   const b = req.body;
-  need(b, ["username", "password", "first_name", "last_name", "email", "business_name", "contact_number", "address"]);
+  const role = b.role ?? "vendor";
+  if (!["vendor", "staff"].includes(role)) throw new HttpError(400, "You can only register as a vendor or an inspector.");
+  need(b, ["username", "password", "first_name", "last_name", "email",
+    ...(role === "vendor" ? ["business_name", "contact_number", "address"] : [])]);
   checkNewPassword(b.password);
   if (!/^[A-Za-z0-9._-]{3,40}$/.test(String(b.username).trim())) {
     throw new HttpError(400, "Username: 3-40 letters, numbers, dots, dashes or underscores.");
   }
   if (!/^\S+@\S+\.\S+$/.test(String(b.email).trim())) throw new HttpError(400, "Please enter a valid email address.");
   const hash = await bcrypt.hash(String(b.password), 10);
-  await prisma.$queryRaw`SELECT fn_register_vendor(${String(b.username)}, ${hash}, ${String(b.first_name)}, ${String(b.last_name)},
-    ${String(b.email)}, ${String(b.business_name)}, ${String(b.contact_number)}, ${String(b.address)}) AS user_id`;
+  if (role === "vendor") {
+    await prisma.$queryRaw`SELECT fn_register_vendor(${String(b.username)}, ${hash}, ${String(b.first_name)}, ${String(b.last_name)},
+      ${String(b.email)}, ${String(b.business_name)}, ${String(b.contact_number)}, ${String(b.address)}) AS user_id`;
+  } else {
+    await prisma.$queryRaw`SELECT fn_register_staff(${String(b.username)}, ${hash}, ${String(b.first_name)}, ${String(b.last_name)},
+      ${String(b.email)}) AS user_id`;
+  }
   res.status(201).json({ ok: true });
 };
 

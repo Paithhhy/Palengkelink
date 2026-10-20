@@ -5,7 +5,7 @@ The website in `public/` talks to this API; the API talks to the database as the
 
 ## Run it on your computer
 1. Install Node.js 20+. In this folder run `npm install`.
-2. Create the database on Neon and run these in the SQL Editor, in order: `database/001` to `005`, then `007` and `008`.
+2. Create the database on Neon and run these in the SQL Editor, in order: `database/001` to `005`, then `007`, `008`, `009` and `010`.
    (Already ran the earlier ones? Just run the ones you have not run yet, in order.)
 3. Copy `.env.example` to `.env` and fill it in (use the **palengkelink_app** user, never the owner).
 4. Give the sample accounts real passwords (the seed only has placeholders):
@@ -37,7 +37,7 @@ The website in `public/` talks to this API; the API talks to the database as the
 | `public/img/market.jpg` | Background photo by Antonio Araujo on Unsplash (free to use under the Unsplash license) |
 
 ## Registration and "Forgot password"
-- **Register** (on the sign-in page): vendors create their own account. It starts as *pending*; the admin approves or declines it on the Dashboard or the Accounts page. Pending accounts cannot sign in.
+- **Register** (on the sign-in page): vendors and inspectors create their own account (admins are only made by an admin; run `database/010` first). It starts as *pending*; the admin approves or declines it on the Dashboard or the Accounts page. Pending accounts cannot sign in.
 - **Forgot password**: the person enters their email and gets a link that works once, for 30 minutes. Only a SHA-256 hash of the link's token is stored in the database.
 - Email is sent through SMTP (settings `SMTP_*` and `MAIL_FROM` in `.env.example`). For Gmail: turn on 2-Step Verification, create an *App Password*, and use `smtp.gmail.com`, port `587`. Without `SMTP_HOST`, the email is printed in the terminal running `npm start`, which is handy for testing.
 - The seed accounts use `@palengkelink.test` emails. Change them to real addresses (Accounts → Edit) before testing the email.

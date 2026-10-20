@@ -224,8 +224,9 @@ const pendingList = (users) => {
   const pending = users.filter((u) => u.status === "pending");
   if (!pending.length) return "";
   return `<div class="card attention"><div class="card-head"><h3>🆕 New registrations (${pending.length})</h3><a href="#users" class="link">Accounts</a></div>
-    <ul class="list">${pending.map((u) => `<li>${avatar(u.business_name || u.first_name, null, "")}<div><b>${esc(u.business_name || "—")}</b>
-      <small class="mut">${esc(u.first_name)} ${esc(u.last_name)} · ${esc(u.email)} · ${esc(u.contact_number || "")}</small></div>
+    <ul class="list">${pending.map((u) => `<li>${avatar(u.business_name || `${u.first_name} ${u.last_name}`, null, "")}<div>
+      <b>${esc(u.business_name || `${u.first_name} ${u.last_name}`)} <span class="chip">${u.role === "staff" ? "📋 Inspector" : "🧑‍🌾 Vendor"}</span></b>
+      <small class="mut">${esc(u.first_name)} ${esc(u.last_name)} · ${esc(u.email)}${u.contact_number ? " · " + esc(u.contact_number) : ""}</small></div>
       <span class="acts">${btn("approve", u.user_id, "✓ Approve", "sm")} ${btn("decline", u.user_id, "Decline", "sm danger")}</span></li>`).join("")}</ul></div>`;
 };
 
@@ -323,7 +324,7 @@ const views = {
     const list = (cache.payments = await get("/payments"));
     const rows = list.map((p) => [`#${p.payment_id}`, esc(p.business_name), esc(p.stall_number), month(p.billing_month), peso(p.amount_due),
       peso(p.amount_paid), p.payment_method ? esc(nice(p.payment_method)) : "—", badge(p.status),
-      p.status !== "paid" ? btn("cash", p.payment_id, "Record cash") : ""]);
+      btn("editBill", p.payment_id, "Edit") + (p.status !== "paid" ? " " + btn("cash", p.payment_id, "Record cash") : "")]);
     return head("Rental payments", `<button data-act="generate">🧾 Create monthly bills</button>`, `${list.filter((p) => p.status !== "paid").length} unpaid bill(s)`) +
       table(["#", "Vendor", "Stall", "Month", "Due", "Paid", "Method", "Status", ""], rows, "No bills yet. Use “Create monthly bills”.");
   },
@@ -480,7 +481,7 @@ const actions = {
   logout: () => logout(),
 
   // Registrations
-  approve: (id) => setStatus(id, "active", "Approved. The vendor can now sign in."),
+  approve: (id) => setStatus(id, "active", "Approved. They can now sign in."),
   decline: (id) => confirm("Decline this registration? The account will be disabled.") && setStatus(id, "inactive", "Registration declined"),
 
   // Vendors
@@ -528,13 +529,24 @@ const actions = {
       return `${r.created} new bill(s) created`;
     },
   }),
+  editBill: (id) => {
+    const p = find("payments", "payment_id", id);
+    openForm({
+      title: `Edit bill · ${p.business_name} · ${month(p.billing_month)}`, done: "Bill updated",
+      values: { amount_due: Number(p.amount_due).toFixed(2), amount_paid: Number(p.amount_paid).toFixed(2) },
+      fields: [{ name: "amount_due", label: "Amount due (₱)", type: "number", step: "0.01", min: 0, hint: "Any amount, e.g. a discount or an extra charge" },
+        { name: "amount_paid", label: "Amount paid so far (₱)", type: "number", step: "0.01", min: 0, hint: "The status (unpaid / partial / paid) updates by itself" }],
+      onSubmit: (d) => api("PATCH", `/payments/${id}`, d),
+    });
+  },
   cash: (id) => {
     const p = find("payments", "payment_id", id);
     const balance = (Number(p.amount_due) - Number(p.amount_paid)).toFixed(2);
     openForm({
       title: `Cash payment · ${p.business_name} · ${month(p.billing_month)}`, submit: "Record payment", done: "Payment recorded",
       values: { amount: balance },
-      fields: [{ name: "amount", label: `Amount received (balance ${peso(balance)})`, type: "number", step: "0.01", min: "0.01", max: balance }],
+      fields: [{ name: "amount", label: `Amount received (₱) · balance ${peso(balance)}`, type: "number", step: "0.01", min: "0.01",
+        hint: "Type any amount. Less than the balance = partial payment." }],
       onSubmit: (d) => api("POST", `/payments/${id}/cash`, d),
     });
   },
@@ -816,10 +828,18 @@ authForm("loginForm", async (d, form) => {
   form.reset();
   start();
 });
+// Register as vendor or inspector: inspectors have no business, so those fields are hidden and disabled (not required, not sent).
+function syncRegisterRole() {
+  const isVendor = $("registerForm").role.value !== "staff";
+  $("vendorOnly").disabled = !isVendor;
+  $("vendorOnly").hidden = !isVendor;
+}
+$("registerForm").addEventListener("change", (e) => e.target.name === "role" && syncRegisterRole());
 authForm("registerForm", async (d, form) => {
   if (d.password !== d.confirm) throw new Error("The passwords do not match.");
   await api("POST", "/auth/register", d);
   form.reset();
+  syncRegisterRole();
   showDone("Registration sent!", "Salamat! The market office will review your registration. You can sign in as soon as it is approved.");
 });
 authForm("forgotForm", async (d, form) => {

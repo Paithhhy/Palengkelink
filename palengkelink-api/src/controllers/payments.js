@@ -20,7 +20,23 @@ exports.generateBalances = async (req, res) => {
   res.json(row);
 };
 
-// Admin: cash paid at the office. Body: { amount: 1500 }
+// Admin: change a bill by hand. Body: { amount_due: 2500, amount_paid: 1000 } (any amounts of 0 or more)
+exports.updateBill = async (req, res) => {
+  need(req.body, ["amount_due", "amount_paid"]);
+  const due = num(req.body.amount_due, "amount due");
+  const paid = num(req.body.amount_paid, "amount paid");
+  if (due < 0 || paid < 0) throw new HttpError(400, "Amounts cannot be negative.");
+  // The status trigger recalculates unpaid / partial / paid. Clear the paid date if the bill is no longer fully paid.
+  const n = await run(req, (tx) => tx.$executeRaw`UPDATE rental_payments
+       SET amount_due = ${due}::numeric, amount_paid = ${paid}::numeric,
+           payment_method = CASE WHEN ${paid}::numeric > 0 THEN coalesce(payment_method, 'cash') ELSE NULL END,
+           payment_date = CASE WHEN ${paid}::numeric >= ${due}::numeric THEN payment_date END
+     WHERE payment_id = ${intParam(req.params.id)}`);
+  if (!n) throw new HttpError(404, "Bill not found.");
+  res.json({ ok: true });
+};
+
+// Admin: cash paid at the office, any amount. Body: { amount: 1500 }
 exports.recordCash = async (req, res) => {
   need(req.body, ["amount"]);
   await run(req, (tx) => tx.$executeRaw`CALL sp_record_cash_payment(${intParam(req.params.id)}::int, ${num(req.body.amount, "amount")}::numeric, ${req.user.id}::int)`);
