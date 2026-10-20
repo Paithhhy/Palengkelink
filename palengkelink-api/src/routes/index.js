@@ -59,6 +59,7 @@ router.post("/suppliers", onlyAdmin, wrap(admin.createSupplier));
 router.patch("/suppliers/:id", onlyAdmin, wrap(admin.updateSupplier));
 router.get("/payments", onlyAdmin, wrap(payments.listPayments));
 router.post("/payments/generate", onlyAdmin, wrap(payments.generateBalances));
+router.patch("/payments/:id", onlyAdmin, wrap(payments.updateBill));
 router.post("/payments/:id/cash", onlyAdmin, wrap(payments.recordCash));
 router.get("/audit", onlyAdmin, wrap(admin.auditLog));
 
