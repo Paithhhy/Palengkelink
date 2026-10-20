@@ -1,16 +1,7 @@
-# PalengkeLink API
+# PalengkeLink
 
 Express (API layer) + Prisma (database connection) + PostgreSQL on Neon, deployed on Vercel.
 The website in `public/` talks to this API; the API talks to the database as the logged-in user's database role.
-
-## Run it on your computer
-1. Install Node.js 20+. In this folder run `npm install`.
-2. Create the database on Neon and run these in the SQL Editor, in order: `database/001` to `005`, then `007`, `008`, `009` and `010`.
-   (Already ran the earlier ones? Just run the ones you have not run yet, in order.)
-3. Copy `.env.example` to `.env` and fill it in (use the **palengkelink_app** user, never the owner).
-4. Give the sample accounts real passwords (the seed only has placeholders):
-   `npm run set-password -- admin YourPassword1`, and the same for `ramos` (inspector), `nena` and `berto` (vendors).
-5. `npm run dev` then open http://localhost:3000 and sign in.
 
 ## Who can do what
 | Role | Can do |
@@ -49,11 +40,3 @@ The website in `public/` talks to this API; the API talks to the database as the
 4. After deploying, also register the webhook so bills are marked paid even if the vendor closes the tab before returning:
    `npm run paymongo-webhook -- https://YOUR-APP.vercel.app`, then put the printed `whsk_...` secret in `PAYMONGO_WEBHOOK_SECRET` (in Vercel too) and redeploy.
 5. Test card (test mode): `4343 4343 4343 4345`, any future expiry date, any CVC. Test GCash: click "Authorize Test Payment".
-
-## Deploy to Vercel
-Push to GitHub (through a Pull Request), import the repo in Vercel, add the environment variables from `.env.example`, deploy. Use Neon's pooled connection string. Then register the webhook URL above.
-
-## Checklist before the defense
-- `.env` is NOT on GitHub and uses `palengkelink_app`
-- Change the placeholder password in `database/004_security.sql`
-- Every member can explain `asUser()`, one controller, and one trigger line by line
