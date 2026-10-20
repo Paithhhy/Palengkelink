@@ -28,7 +28,7 @@ const PAGES = {
   home:        { icon: "🏠", label: "Home",        roles: ["vendor"] },
   profile:     { icon: "👤", label: "My Profile",  roles: ["vendor"], open: ["admin", "staff", "vendor"] },
   vendors:     { icon: "🧑‍🌾", label: "Vendors",   roles: ["admin"] },
-  stalls:      { icon: "🏪", label: "Stalls",      roles: ["admin", "staff"] },
+  stalls:      { icon: "🏪", label: "Stalls",      roles: ["admin", "staff", "vendor"] },
   payments:    { icon: "💳", label: "Payments",    roles: ["admin", "vendor"] },
   products:    { icon: "🧺", label: "Products",    roles: ["admin", "vendor"] },
   inspections: { icon: "📋", label: "Inspections", roles: ["admin", "staff"] },
@@ -53,7 +53,7 @@ const opts = (list) => list.map((x) => [x, nice(x)]);
 const ROLE_NAMES = { admin: "Admin / Market Manager", staff: "Market Staff / Inspector", vendor: "Vendor" };
 const greeting = () => { const h = new Date().getHours(); return h < 12 ? "Magandang umaga" : h < 18 ? "Magandang hapon" : "Magandang gabi"; };
 
-const BAD = ["unpaid", "failed", "suspended", "inactive", "out_of_stock"];
+const BAD = ["unpaid", "failed", "suspended", "inactive", "out_of_stock", "declined"];
 const WARN = ["open", "in_progress", "vacant", "maintenance", "partial", "pending"];
 const badge = (s) => `<span class="b ${BAD.includes(s) ? "x" : WARN.includes(s) ? "w" : ""}">${esc(nice(s))}</span>`;
 const btn = (act, id, text, cls = "sm alt") => `<button class="${cls}" data-act="${act}" data-id="${id}">${text}</button>`;
@@ -75,10 +75,15 @@ function avatar(name, src, cls = "") {
   return `<span class="av ${cls}" style="background:hsl(${hue} 45% 40%)">${esc(initials)}</span>`;
 }
 
-/** Table that turns into cards on phones (td[data-l] holds the column name). Cells are already-escaped HTML. */
-function table(headers, rows, emptyText = "No records yet.") {
+/** Search box that hides rows ([data-r]) not containing the typed words. */
+const searchBox = (placeholder = "Search…") =>
+  `<input class="q" type="search" placeholder="🔍 ${esc(placeholder)}" aria-label="${esc(placeholder)}"><p class="mut nomatch" hidden>Nothing matches your search.</p>`;
+
+/** Table that turns into cards on phones (td[data-l] holds the column name). Cells are already-escaped HTML.
+ *  search = placeholder text: always show a search box; without it, a box is shown only for long lists. */
+function table(headers, rows, emptyText = "No records yet.", search) {
   if (!rows.length) return `<div class="card">${empty("🗂️", esc(emptyText))}</div>`;
-  const search = rows.length > 5 ? `<input class="q" type="search" placeholder="🔍 Search…">` : "";
+  search = search || rows.length > 5 ? searchBox(search) : "";
   const body = rows.map((cells) => `<tr data-r>${cells.map((c, i) => `<td data-l="${esc(headers[i])}">${c ?? ""}</td>`).join("")}</tr>`).join("");
   return `${search}<div class="tw"><table><thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
@@ -230,13 +235,48 @@ const pendingList = (users) => {
       <span class="acts">${btn("approve", u.user_id, "✓ Approve", "sm")} ${btn("decline", u.user_id, "Decline", "sm danger")}</span></li>`).join("")}</ul></div>`;
 };
 
+/** Admin: supplier suggestions from vendors that wait for a decision. */
+const suggestionList = (ideas) => {
+  const pending = ideas.filter((g) => g.status === "pending");
+  if (!pending.length) return "";
+  return `<div class="card attention"><div class="card-head"><h3>💡 Supplier suggestions (${pending.length})</h3><a href="#products" class="link">Products</a></div>
+    <ul class="list">${pending.map((g) => `<li><span class="ico-sm">🚚</span><div>
+      <b>${esc(g.supplier_name)}</b>${g.supplies ? ` <small class="mut">· ${esc(g.supplies)}</small>` : ""}
+      <small class="mut">Suggested by ${esc(g.business_name)} · ${day(g.created_at)}${g.contact_number ? " · 📞 " + esc(g.contact_number) : ""}${g.address ? " · 📍 " + esc(g.address) : ""}</small>
+      ${g.reason ? `<small>“${esc(g.reason)}”</small>` : ""}</div>
+      <span class="acts">${btn("approveSuggestion", g.suggestion_id, "✓ Add supplier", "sm")} ${btn("declineSuggestion", g.suggestion_id, "Decline", "sm danger")}</span></li>`).join("")}</ul></div>`;
+};
+
+// Activity log (admin): who changed what, newest first. Rows come from the database audit trigger.
+const LOG_TABLES = {
+  users: "Account", vendors: "Vendor", stalls: "Stall", stall_assignments: "Stall assignment", rental_payments: "Bill",
+  vendor_products: "Vendor product", inspections: "Inspection", maintenance_requests: "Maintenance request",
+  supplier_suggestions: "Supplier suggestion",
+};
+const LOG_ACTIONS = { INSERT: ["Added", ""], UPDATE: ["Changed", "w"], DELETE: ["Removed", "x"] };
+const when = (d) => new Date(d).toLocaleString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+const activityLog = (log) => {
+  const rows = log.map((l) => {
+    const [verb, tone] = LOG_ACTIONS[l.action] || [nice(l.action), ""];
+    const label = l.table_name === "rental_payments" && l.label ? month(l.label) : l.label;
+    return [`<small>${when(l.logged_at)}</small>`,
+      l.username ? `<b>${esc(l.actor)}</b><small class="mut"> @${esc(l.username)}</small>` : `<span class="mut">System / online payment</span>`,
+      `<span class="b ${tone}">${verb}</span>`,
+      `${esc(LOG_TABLES[l.table_name] || nice(l.table_name))} #${l.record_id ?? "—"}${label ? ` · ${esc(String(label).slice(0, 60))}` : ""}`,
+      l.changed?.length ? `<small class="mut">${l.changed.map((c) => esc(nice(c))).join(", ")}</small>` : ""];
+  });
+  return head("Activity log", "", "Last 200 changes in the system · only admins can see this") +
+    table(["When", "Who", "Action", "What", "Changed fields"], rows, "No activity yet.", "Search person, action, stall, vendor…");
+};
+
 // ---------- Screens ----------
 const views = {
   // ===== Admin / staff dashboard =====
   async dashboard() {
     const isAdmin = role() === "admin";
-    const [s, stalls, requests, payments, users] = await Promise.all([get("/dashboard"), get("/stalls"), get("/maintenance"),
-      isAdmin ? get("/payments") : [], isAdmin ? get("/users") : []]);
+    const [s, stalls, requests, payments, users, ideas] = await Promise.all([get("/dashboard"), get("/stalls"), get("/maintenance"),
+      isAdmin ? get("/payments") : [], isAdmin ? get("/users") : [], isAdmin ? get("/suggestions") : []]);
+    cache.suggestions = ideas;
     const open = requests.filter((r) => r.status !== "resolved").length;
     return `<section class="hero" style="--img:url('img/market.jpg')"><div>
         <h2>${greeting()}, ${esc(session.user.first_name)}!</h2>
@@ -244,7 +284,7 @@ const views = {
         <div class="acts">${isAdmin
           ? `<button data-act="generate">🧾 Create monthly bills</button><button class="glass" data-act="addVendor">＋ Register vendor</button>`
           : `<button data-act="addInspection">📋 Record inspection</button>`}</div></section>
-      ${isAdmin ? pendingList(users) : ""}
+      ${isAdmin ? pendingList(users) + suggestionList(ideas) : ""}
       <div class="grid">
         ${isAdmin ? stat("🧑‍🌾", s.vendors, "Registered vendors", "#vendors", "t-blue") : ""}
         ${stat("🏪", s.occupied_stalls, "Occupied stalls", "#stalls", "t-green")}
@@ -270,7 +310,7 @@ const views = {
       ${me.status === "suspended" ? `<div class="card warnbox">⚠️ Your vendor account is suspended. Please visit the market office.</div>` : ""}
       <div class="grid">
         ${stat("💳", pesoShort(due), "Unpaid balance", "#payments", due ? "t-red" : "t-green")}
-        ${stat("🏪", stalls.length, "My stalls", null, "t-blue")}
+        ${stat("🏪", stalls.length, "My stalls", "#stalls", "t-blue")}
         ${stat("🧺", products.length, "Products listed", "#products", "t-green")}
         ${stat("🔧", requests.filter((r) => r.status !== "resolved").length, "Open requests", "#maintenance", "t-amber")}
       </div>
@@ -294,20 +334,31 @@ const views = {
       esc(`${v.first_name} ${v.last_name}`), esc(v.username), esc(v.contact_number),
       v.account_status === "active" ? badge(v.status) : badge(v.account_status), btn("editVendor", v.vendor_id, "Edit")]);
     return head("Vendors", `<button data-act="addVendor">＋ Register vendor</button>`, `${list.length} vendor(s)`) +
-      table(["Business", "Owner", "Username", "Contact", "Status", ""], rows);
+      table(["Business", "Owner", "Username", "Contact", "Status", ""], rows, undefined, "Search vendors, owners, contact…");
   },
 
-  // ===== Stalls (admin + staff) =====
+  // ===== Stalls (admin + staff: every stall; vendor: own stalls) =====
   async stalls() {
+    if (role() === "vendor") {
+      const [list, pays] = await Promise.all([get("/my/stalls"), get("/my/payments")]);
+      cache.myStalls = list;
+      const owed = (no) => pays.filter((p) => p.stall_number === no && p.status !== "paid").reduce((t, p) => t + Number(p.balance), 0);
+      const rows = list.map((s) => [`<b>${esc(s.stall_number)}</b>`, esc(s.section), peso(s.monthly_rent), badge(s.status), day(s.start_date),
+        owed(s.stall_number) ? `<a href="#payments" class="bad">${peso(owed(s.stall_number))}</a>` : `<span class="ok">Paid up</span>`,
+        btn("addRequest", s.stall_id, "🔧 Report a problem")]);
+      return head("My stalls", "", list.length ? `You rent ${list.length} stall(s)` : "") +
+        table(["Stall", "Section", "Monthly rent", "Status", "Renting since", "Unpaid", ""], rows,
+          "You have no stall yet. Please visit the market office to rent one.", "Search stall, section, status…");
+    }
     const isAdmin = role() === "admin";
     const [list, vendors] = await Promise.all([get("/stalls"), isAdmin ? get("/vendors") : []]);
     cache.stalls = list;
     cache.vendors = vendors;
-    const rows = list.map((s) => [`<b>${esc(s.stall_number)}</b>`, esc(s.section), esc(s.stall_type), peso(s.monthly_rent), badge(s.status),
+    const rows = list.map((s) => [`<b>${esc(s.stall_number)}</b>`, esc(s.section), peso(s.monthly_rent), badge(s.status),
       s.vendor_id ? `<a href="#profile/${s.vendor_id}">${esc(s.business_name)}</a>` : `<span class="mut">—</span>`,
       btn("editStall", s.stall_id, "Edit") + (isAdmin ? " " + btn("stallVendor", s.stall_id, "Change vendor") : "")]);
     return head("Stalls", isAdmin ? `<button data-act="addStall">＋ Add stall</button>` : "", `${list.length} stall(s)`) +
-      table(["Stall", "Section", "Type", "Monthly rent", "Status", "Vendor", ""], rows);
+      table(["Stall", "Section", "Monthly rent", "Status", "Vendor", ""], rows, undefined, "Search stall, section, status, vendor…");
   },
 
   // ===== Payments =====
@@ -338,13 +389,22 @@ const views = {
       const rows = mine.map((p) => [`<b>${esc(p.product_name)}</b>`, esc(p.category), `${peso(p.selling_price)} / ${esc(p.unit)}`, p.stock_quantity,
         badge(p.status), esc(p.supplier_name || "—"),
         btn("editMyProduct", p.vendor_product_id, "Edit") + " " + btn("removeMyProduct", p.vendor_product_id, "Remove", "sm danger")]);
+      const ideas = await get("/my/suggestions");
       return head("My products", `<button data-act="addMyProduct">＋ Add product</button>`, "Other vendors see these on your profile") +
-        table(["Product", "Category", "Price", "Stock", "Status", "Supplier", ""], rows, "You have not listed any products yet.");
+        table(["Product", "Category", "Price", "Stock", "Status", "Supplier", ""], rows, "You have not listed any products yet.") +
+        head("My supplier suggestions", `<button class="alt" data-act="suggestSupplier">💡 Suggest a supplier</button>`,
+          "Know a good supplier that is not in the list? Suggest it and the market office will review it.") +
+        table(["Supplier", "What they supply", "Sent", "Status", "Reply from the office", ""], ideas.map((g) => [`<b>${esc(g.supplier_name)}</b>`,
+          esc(g.supplies || "—"), day(g.created_at), badge(g.status),
+          g.admin_note ? esc(g.admin_note) : g.status === "approved" ? `<small class="ok">Added. You can now pick it for your products.</small>` : `<span class="mut">—</span>`,
+          g.status === "pending" ? btn("withdrawSuggestion", g.suggestion_id, "Withdraw", "sm ghost") : ""]),
+          "You have not suggested any suppliers yet.");
     }
-    const [catalog, listings, suppliers] = await Promise.all([get("/products"), get("/vendor-products"), get("/suppliers")]);
+    const [catalog, listings, suppliers, ideas] = await Promise.all([get("/products"), get("/vendor-products"), get("/suppliers"), get("/suggestions")]);
     cache.catalog = catalog;
     cache.suppliers = suppliers;
-    return head("Product catalog", `<button data-act="addProduct">＋ Add product</button>`) +
+    cache.suggestions = ideas;
+    return suggestionList(ideas) + head("Product catalog", `<button data-act="addProduct">＋ Add product</button>`) +
       table(["Product", "Category", "Unit", "Sold by", ""], catalog.map((p) => [`<b>${esc(p.product_name)}</b>`, esc(p.category), esc(p.unit),
         `${p.vendors} vendor(s)`, btn("editProduct", p.product_id, "Edit")])) +
       head("What vendors sell") +
@@ -353,7 +413,11 @@ const views = {
         p.stock_quantity, badge(p.status), esc(p.supplier_name || "—")])) +
       head("Suppliers", `<button data-act="addSupplier">＋ Add supplier</button>`) +
       table(["Supplier", "Contact", "Address", "Products", "Status", ""], suppliers.map((s) => [`<b>${esc(s.supplier_name)}</b>`,
-        esc(s.contact_number), esc(s.address), s.products, badge(s.status), btn("editSupplier", s.supplier_id, "Edit")]));
+        esc(s.contact_number), esc(s.address), s.products, badge(s.status), btn("editSupplier", s.supplier_id, "Edit")])) +
+      head("Supplier suggestions from vendors", "", "Reviewed suggestions") +
+      table(["Supplier", "Suggested by", "Sent", "Status", "Note"], ideas.filter((g) => g.status !== "pending").map((g) => [`<b>${esc(g.supplier_name)}</b>`,
+        `<a href="#profile/${g.vendor_id}">${esc(g.business_name)}</a>`, day(g.created_at), badge(g.status), esc(g.admin_note || "—")]),
+        "No reviewed suggestions yet.");
   },
 
   // ===== Inspections (admin + staff) =====
@@ -364,7 +428,7 @@ const views = {
     const rows = list.map((i) => [`<b>${esc(i.stall_number)}</b>`, day(i.inspection_date), esc(i.inspection_type), badge(i.result),
       esc(i.inspector || "—"), esc(i.remarks || "—"), btn("editInspection", i.inspection_id, "Edit")]);
     return head("Inspections", `<button data-act="addInspection">＋ Record inspection</button>`, `${list.length} record(s)`) +
-      table(["Stall", "Date", "Type", "Result", "Inspector", "Remarks", ""], rows);
+      table(["Stall", "Date", "Type", "Result", "Inspector", "Remarks", ""], rows, undefined, "Search stall, type, result, inspector…");
   },
 
   // ===== Maintenance =====
@@ -377,7 +441,7 @@ const views = {
         r.status === "open" ? btn("editRequest", r.request_id, "Edit") : ""]);
       return head("Maintenance requests", stalls.length ? `<button data-act="addRequest">＋ Report a problem</button>` : "",
         stalls.length ? "The market office is notified right away" : "You need an assigned stall to report a problem") +
-        table(["#", "Stall", "Issue", "Date", "Status", ""], rows, "No requests yet.");
+        table(["#", "Stall", "Issue", "Date", "Status", ""], rows, "No requests yet.", "Search stall, issue, status…");
     }
     const list = await get("/maintenance");
     const rows = list.map((r) => [`#${r.request_id}`, esc(r.stall_number), `<a href="#profile/${r.vendor_id}">${esc(r.business_name)}</a>`,
@@ -385,7 +449,7 @@ const views = {
       `<select class="inline" data-change="requestStatus" data-id="${r.request_id}">${["open", "in_progress", "resolved"].map((s) =>
         `<option value="${s}" ${s === r.status ? "selected" : ""}>${nice(s)}</option>`).join("")}</select>`]);
     return head("Maintenance requests", "", `${list.filter((r) => r.status !== "resolved").length} open`) +
-      table(["#", "Stall", "Vendor", "Issue", "Date", "Status"], rows);
+      table(["#", "Stall", "Vendor", "Issue", "Date", "Status"], rows, undefined, "Search stall, vendor, issue, status…");
   },
 
   // ===== Vendor directory (everyone) =====
@@ -396,7 +460,7 @@ const views = {
         <div><b>${esc(v.business_name)}</b><small class="mut">${esc(v.owner_name)}${v.stalls ? " · Stall " + esc(v.stalls) : ""}</small>
         <span class="chip">🧺 ${v.products} product(s)</span>${v.bio ? `<p>${esc(v.bio.slice(0, 110))}${v.bio.length > 110 ? "…" : ""}</p>` : ""}</div></a>`);
     return head("Market directory", "", "Every active vendor in the market") +
-      (list.length > 5 ? `<input class="q" type="search" placeholder="🔍 Search vendors or stalls…">` : "") +
+      (list.length ? searchBox("Search vendors, owners or stalls…") : "") +
       (cards.length ? `<div class="vgrid">${cards.join("")}</div>` : `<div class="card">${empty("🏬", "No vendors yet.")}</div>`);
   },
 
@@ -406,7 +470,7 @@ const views = {
     if (!id) return `<div class="card">${empty("👤", `Only vendors have a profile. Open one from the <a href="#directory">Directory</a>.`)}</div>`;
     const p = await get("/directory/" + id);
     const own = id === session.user.vendor_id;
-    const stalls = p.stall_list.map((s) => `<li>🏪 <b>${esc(s.stall_number)}</b> · ${esc(s.section)} · ${esc(s.stall_type)}</li>`).join("");
+    const stalls = p.stall_list.map((s) => `<li>🏪 <b>${esc(s.stall_number)}</b> · ${esc(s.section)}${s.stall_type ? ` · ${esc(s.stall_type)}` : ""}</li>`).join("");
     const products = p.product_list.map((x) => `<div class="ptile"><b>${esc(x.product_name)}</b><small class="mut">${esc(x.category)}</small>
         <span class="price">${peso(x.selling_price)} <small>/ ${esc(x.unit)}</small></span>
         ${x.status === "available" ? `<small class="ok">● ${x.stock_quantity} in stock</small>` : badge(x.status)}</div>`).join("");
@@ -425,7 +489,7 @@ const views = {
             <ul class="facts"><li>📞 ${esc(p.contact_number)}</li><li>📍 ${esc(p.address)}</li><li>🗓️ Vendor since ${day(p.registration_date)}</li></ul></div>
           <div class="card"><h3>Stalls</h3>${stalls ? `<ul class="facts">${stalls}</ul>` : `<p class="mut">No stall assigned.</p>`}</div>
         </aside>
-        <section class="card"><h3>Products</h3>
+        <section class="card"><div class="card-head"><h3>Products</h3>${own ? `<button class="sm" data-act="addMyProduct">＋ Add product</button>` : ""}</div>
           ${products ? `<div class="pgrid">${products}</div>` : empty("🧺", `No products listed yet.${own ? ` <a href="#products">Add one</a>.` : ""}`)}</section>
       </div>`;
   },
@@ -437,19 +501,21 @@ const views = {
       `<span class="who-cell">${avatar(`${u.first_name} ${u.last_name}`, null, "sm2")}<span><b>${esc(u.first_name)} ${esc(u.last_name)}</b><small class="mut">@${esc(u.username)}</small></span></span>`,
       esc(u.email), esc(ROLE_NAMES[u.role]), badge(u.status), btn("editUser", u.user_id, "Edit")]);
     return pendingList(list) + head("User accounts", `<button data-act="addUser">＋ Add admin / inspector</button>`, "Vendors register themselves or on the Vendors page") +
-      table(["Name", "Email", "Role", "Status", ""], rows);
+      table(["Name", "Email", "Role", "Status", ""], rows, undefined, "Search name, username, email, role…");
   },
 
   // ===== My account (everyone) =====
   async account() {
-    const me = (session.user = await get("/me"));
+    const [me, log] = await Promise.all([get("/me"), role() === "admin" ? get("/audit") : null]);
+    session.user = me;
     return `<div class="card acct">${avatar(`${me.first_name} ${me.last_name}`, session.avatar, "xl")}
         <div><h2>${esc(me.first_name)} ${esc(me.last_name)}</h2><span class="mut">@${esc(me.username)} · ${esc(ROLE_NAMES[me.role])}</span>
         <span class="mut">✉️ ${esc(me.email)}</span>
         <div class="acts"><button data-act="changePassword">🔒 Change password</button>
         ${me.vendor_id ? `<a class="btn alt" href="#profile">👤 Edit my public profile</a>` : ""}
         <button class="ghost" data-act="logout">Log out</button></div></div></div>
-      <p class="mut small">Forgot your password some day? Use “Forgot password?” on the sign-in page. The reset link is sent to ${esc(me.email)}.</p>`;
+      <p class="mut small">Forgot your password some day? Use “Forgot password?” on the sign-in page. A verification code is sent to ${esc(me.email)}.</p>
+      ${log ? activityLog(log) : ""}`;
   },
 };
 
@@ -466,7 +532,7 @@ const vendorFields = [
 ];
 const stallFields = (isAdmin) => [
   ...(isAdmin ? [{ name: "stall_number", label: "Stall number" }] : []),
-  { name: "section", label: "Section" }, { name: "stall_type", label: "Type (Wet, Dry, Meat…)" },
+  { name: "section", label: "Section" },
   ...(isAdmin ? [{ name: "monthly_rent", label: "Monthly rent (₱)", type: "number", step: "0.01", min: 0 }] : []),
   { name: "status", label: "Condition", type: "select", options: [["in_use", "In use (occupied / vacant is automatic)"], ["maintenance", "Under maintenance"]] },
 ];
@@ -499,7 +565,7 @@ const actions = {
 
   // Stalls
   addStall: () => openForm({
-    title: "Add stall", submit: "Add", done: "Stall added", fields: stallFields(true).slice(0, 4),
+    title: "Add stall", submit: "Add", done: "Stall added", fields: stallFields(true).slice(0, 3),
     onSubmit: (d) => api("POST", "/stalls", d),
   }),
   editStall: (id) => {
@@ -583,8 +649,44 @@ const actions = {
     onSubmit: (d) => api("PATCH", `/suppliers/${id}`, d),
   }),
 
+  // Supplier suggestions (vendor suggests, admin decides)
+  suggestSupplier: () => openForm({
+    title: "Suggest a supplier", submit: "Send suggestion", done: "Suggestion sent to the market office",
+    fields: [
+      { name: "supplier_name", label: "Supplier name", wide: true },
+      { name: "contact_number", label: "Contact number", required: false, hint: "If you know it" },
+      { name: "address", label: "Address", required: false, hint: "If you know it" },
+      { name: "supplies", label: "What do they supply?", required: false, wide: true, hint: "e.g. fresh fish, rice, vegetables from Benguet" },
+      { name: "reason", label: "Why do you suggest them?", type: "textarea", required: false, wide: true, max: 500 },
+    ],
+    onSubmit: (d) => api("POST", "/my/suggestions", d),
+  }),
+  withdrawSuggestion: async (id) => {
+    if (!confirm("Withdraw this supplier suggestion?")) return;
+    try { await api("DELETE", `/my/suggestions/${id}`); toast("Suggestion withdrawn"); render(); } catch (ex) { toast(ex.message, true); }
+  },
+  approveSuggestion: (id) => {
+    const g = find("suggestions", "suggestion_id", id);
+    openForm({
+      title: "Add suggested supplier", submit: "Add supplier", done: `${g.supplier_name} added to the suppliers`,
+      values: g,
+      fields: [...supplierFields, { name: "admin_note", label: "Note to the vendor", required: false, wide: true, hint: "Optional" }],
+      extra: `<p class="mut small">Suggested by ${esc(g.business_name)}${g.supplies ? ` · supplies ${esc(g.supplies)}` : ""}. Check or fill in the contact number and address.</p>`,
+      onSubmit: (d) => api("PATCH", `/suggestions/${id}`, { ...d, status: "approved" }),
+    });
+  },
+  declineSuggestion: (id) => {
+    const g = find("suggestions", "suggestion_id", id);
+    openForm({
+      title: `Decline “${g.supplier_name}”?`, submit: "Decline", done: "Suggestion declined",
+      fields: [{ name: "admin_note", label: "Reason (the vendor sees this)", type: "textarea", required: false, wide: true, max: 500 }],
+      onSubmit: (d) => api("PATCH", `/suggestions/${id}`, { ...d, status: "declined" }),
+    });
+  },
+
   // Products (vendor)
-  addMyProduct: () => {
+  addMyProduct: async () => {   // from the Products page or the vendor's own profile
+    if (!cache.catalog?.products) cache.catalog = await get("/my/catalog");
     const { products, suppliers } = cache.catalog;
     openForm({
       title: "Add product", submit: "Add", done: "Product added",
@@ -594,7 +696,8 @@ const actions = {
         { name: "category", label: "Category", required: false }, { name: "unit", label: "Unit (kg, bundle, pc…)", required: false },
         { name: "selling_price", label: "Price (₱)", type: "number", step: "0.01", min: 0 },
         { name: "stock_quantity", label: "Stock", type: "number", step: 1, min: 0 },
-        { name: "supplier_id", label: "Supplier", type: "select", required: false, options: [["", "— None —"], ...suppliers.map((s) => [s.supplier_id, s.supplier_name])] },
+        { name: "supplier_id", label: "Supplier", type: "select", required: false, options: [["", "— None —"], ...suppliers.map((s) => [s.supplier_id, s.supplier_name])],
+          hint: "Not in the list? Use “Suggest a supplier” on the Products page." },
       ],
       onInput: (form, e) => {   // known product -> fill in its category and unit
         if (e.target.name !== "product_name") return;
@@ -651,8 +754,8 @@ const actions = {
   },
 
   // Maintenance (vendor)
-  addRequest: () => openForm({
-    title: "Report a problem", submit: "Send", done: "Request sent",
+  addRequest: (id) => openForm({   // id = stall picked on the My stalls page (none from the Maintenance page)
+    title: "Report a problem", submit: "Send", done: "Request sent", values: id ? { stall_id: id } : {},
     fields: [{ name: "stall_id", label: "Stall", type: "select", options: cache.myStalls.map((s) => [s.stall_id, s.stall_number]) },
       { name: "issue", label: "What is the problem?", type: "textarea", wide: true }],
     onSubmit: (d) => api("POST", "/my/requests", d),
@@ -731,14 +834,18 @@ async function render() {
   document.title = `${$("pageTitle").textContent} · PalengkeLink`;
   const main = $("main");
   const mine = ++renderCount;
+  let term = "";   // a refresh of the same page (e.g. after saving a form) keeps what was typed in the search box
   if (shownRoute !== page + arg) {   // a new page: show a skeleton; a refresh of the same page keeps it on screen
     main.innerHTML = `<div class="skeleton"><i></i><i></i><i></i></div>`;
     shownRoute = page + arg;
     scrollTo(0, 0);
-  }
+  } else term = main.querySelector(".q")?.value || "";
   try {
     const html = await views[page](arg);
-    if (mine === renderCount) main.innerHTML = `<div class="page">${html}</div>`;
+    if (mine !== renderCount) return;
+    main.innerHTML = `<div class="page">${html}</div>`;
+    const q = main.querySelector(".q");
+    if (q && term) { q.value = term; applySearch(q); }
   } catch (ex) {
     if (mine === renderCount && session.token) main.innerHTML = `<div class="card err">⚠️ ${esc(ex.message)}</div>`;
   }
@@ -842,10 +949,20 @@ authForm("registerForm", async (d, form) => {
   syncRegisterRole();
   showDone("Registration sent!", "Salamat! The market office will review your registration. You can sign in as soon as it is approved.");
 });
+let resetEmail = null;   // the email the verification code was sent to
 authForm("forgotForm", async (d, form) => {
-  await api("POST", "/auth/forgot", { email: d.email.trim() });
+  resetEmail = d.email.trim();
+  await api("POST", "/auth/forgot", { email: resetEmail });
   form.reset();
-  showDone("Check your email", `If an account uses ${d.email.trim()}, we sent it a link to reset the password. The link works for 30 minutes.`);
+  $("codeText").textContent = `If an account uses ${resetEmail}, we sent it a 6-digit code (and a reset link). It works for 30 minutes.`;
+  showAuth("code");
+});
+authForm("codeForm", async (d, form) => {
+  if (d.new_password !== d.confirm) throw new Error("The passwords do not match.");
+  await api("POST", "/auth/reset", { email: resetEmail, code: d.code.trim(), new_password: d.new_password });
+  form.reset();
+  resetEmail = null;
+  showDone("Password changed", "You can now sign in with your new password.");
 });
 authForm("resetForm", async (d, form) => {
   if (d.new_password !== d.confirm) throw new Error("The passwords do not match.");
@@ -873,11 +990,24 @@ $("main").addEventListener("change", (e) => {
   const el = e.target.closest("[data-change]");
   if (el) changes[el.dataset.change](Number(el.dataset.id), el);
 });
-$("main").addEventListener("input", (e) => {
-  if (!e.target.classList.contains("q")) return;
-  const term = e.target.value.toLowerCase();
-  $("main").querySelectorAll("[data-r]").forEach((row) => { row.hidden = !row.textContent.toLowerCase().includes(term); });
-});
+/** A row's searchable text. A dropdown counts only with its chosen option, not every option in it. */
+function rowText(row) {
+  let text = row.textContent;
+  row.querySelectorAll("select").forEach((s) => { text = text.replace(s.textContent, " " + (s.selectedOptions[0]?.text || "") + " "); });
+  return text.toLowerCase();
+}
+/** Show only the rows that contain every typed word (in any order). */
+function applySearch(input) {
+  const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+  let shown = 0;
+  $("main").querySelectorAll("[data-r]").forEach((row) => {
+    const text = rowText(row);
+    row.hidden = !words.every((w) => text.includes(w));
+    if (!row.hidden) shown++;
+  });
+  $("main").querySelectorAll(".nomatch").forEach((p) => { p.hidden = shown > 0; });
+}
+$("main").addEventListener("input", (e) => e.target.classList.contains("q") && applySearch(e.target));
 window.addEventListener("hashchange", () => session.user && render());
 
 // ---------- Start ----------

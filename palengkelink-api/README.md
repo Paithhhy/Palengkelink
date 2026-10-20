@@ -5,7 +5,7 @@ The website in `public/` talks to this API; the API talks to the database as the
 
 ## Run it on your computer
 1. Install Node.js 20+. In this folder run `npm install`.
-2. Create the database on Neon and run these in the SQL Editor, in order: `database/001` to `005`, then `007`, `008`, `009` and `010`.
+2. Create the database on Neon and run these in the SQL Editor, in order: `database/001` to `005`, then `007`, `008`, `009`, `010`, `011` and `012`.
    (Already ran the earlier ones? Just run the ones you have not run yet, in order.)
 3. Copy `.env.example` to `.env` and fill it in (use the **palengkelink_app** user, never the owner).
 4. Give the sample accounts real passwords (the seed only has placeholders):
@@ -15,9 +15,9 @@ The website in `public/` talks to this API; the API talks to the database as the
 ## Who can do what
 | Role | Can do |
 |---|---|
-| Admin | Everything: vendors, stalls (number, section, type, rent, condition, who rents it), bills + cash payments, product catalog, suppliers, inspections, maintenance status, user accounts |
-| Staff / inspector | Stalls (section, type, under-maintenance), record + edit inspections, maintenance status |
-| Vendor | Own profile (picture, cover, about), own products (add, edit price/stock/supplier, remove), report + edit maintenance problems, pay rent online (PayMongo) |
+| Admin | Everything: vendors, stalls (number, section, rent, condition, who rents it), bills + cash payments, product catalog, suppliers, inspections, maintenance status, user accounts, approve / decline supplier suggestions, Activity log (on the Account page) |
+| Staff / inspector | Stalls (section, under-maintenance), record + edit inspections, maintenance status |
+| Vendor | My stalls (section, rent, renting since, unpaid balance, report a problem), own profile (picture, cover, about), own products (add, edit price/stock/supplier, remove), report + edit maintenance problems, suggest suppliers (Products page), pay rent online (PayMongo) |
 | Everyone | Market Directory: view every active vendor's profile; change own password |
 
 ## Folder guide
@@ -38,7 +38,9 @@ The website in `public/` talks to this API; the API talks to the database as the
 
 ## Registration and "Forgot password"
 - **Register** (on the sign-in page): vendors and inspectors create their own account (admins are only made by an admin; run `database/010` first). It starts as *pending*; the admin approves or declines it on the Dashboard or the Accounts page. Pending accounts cannot sign in.
-- **Forgot password**: the person enters their email and gets a link that works once, for 30 minutes. Only a SHA-256 hash of the link's token is stored in the database.
+- **Forgot password**: the person enters their email and gets a 6-digit verification code plus a reset link (run `database/011` first). They type the code on the sign-in page with a new password, or open the link. Both work once, for 30 minutes; 5 wrong codes and a new code is needed. Only hashes of the code (HMAC with `JWT_SECRET`) and of the link token (SHA-256) are stored.
+- **Activity log**: admins see the last 200 changes (who, what, when, which fields) at the bottom of the Account page. Other roles cannot see it, and `/api/audit` is admin-only.
+- **Search**: Vendors, Stalls, Inspections, Maintenance, Directory, Accounts and the Activity log always have a search box. Type several words to find rows that contain all of them.
 - Email is sent through SMTP (settings `SMTP_*` and `MAIL_FROM` in `.env.example`). For Gmail: turn on 2-Step Verification, create an *App Password*, and use `smtp.gmail.com`, port `587`. Without `SMTP_HOST`, the email is printed in the terminal running `npm start`, which is handy for testing.
 - The seed accounts use `@palengkelink.test` emails. Change them to real addresses (Accounts → Edit) before testing the email.
 
