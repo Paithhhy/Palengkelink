@@ -3,10 +3,22 @@ const bcrypt = require("bcryptjs");
 const { prisma, asUser } = require("../db");
 const { HttpError, need, intParam, num } = require("../errors");
 const { setSession } = require("../session");
-const { checkNewPassword } = require("./auth");
+const { checkNewPassword, checkUsername, checkEmail } = require("./auth");
 
 const run = (req, work) => asUser(req.user, work);
 const text = (v) => (v === undefined || v === null ? null : String(v).trim());
+const email = (v) => String(v ?? "").trim().toLowerCase();   // stored in lower case, like self-registration does
+
+/** Same rule as self-registration (fn_register_vendor / fn_register_staff): usernames and emails are unique
+ *  ignoring capital letters, so "Ramos" cannot be added next to "ramos". exceptId = the account being edited. */
+async function assertAccountFree(tx, { username, mail, exceptId = 0 }) {
+  if (username != null) {
+    const [taken] = await tx.$queryRaw`SELECT 1 FROM users WHERE lower(username) = lower(${text(username)}) AND user_id <> ${exceptId}`;
+    if (taken) throw new HttpError(409, "That username is already taken.");
+  }
+  const [used] = await tx.$queryRaw`SELECT 1 FROM users WHERE lower(email) = ${mail} AND user_id <> ${exceptId}`;
+  if (used) throw new HttpError(409, "That email is already used by another account.");
+}
 
 // ----- Dashboard -----
 exports.dashboard = async (req, res) =>
@@ -22,12 +34,15 @@ exports.listVendors = async (req, res) =>
 exports.createVendor = async (req, res) => {
   const b = req.body;
   need(b, ["username", "password", "first_name", "last_name", "email", "business_name", "contact_number", "address"]);
+  checkUsername(b.username);
+  checkEmail(b.email);
   checkNewPassword(b.password, b.username);
   const hash = await bcrypt.hash(String(b.password), 10);
   // Two inserts in ONE transaction: either both are saved or neither.
   const vendor = await run(req, async (tx) => {
+    await assertAccountFree(tx, { username: b.username, mail: email(b.email) });
     const [u] = await tx.$queryRaw`INSERT INTO users (username, password_hash, first_name, last_name, email, role)
-      VALUES (${text(b.username)}, ${hash}, ${text(b.first_name)}, ${text(b.last_name)}, ${text(b.email)}, 'vendor') RETURNING user_id`;
+      VALUES (${text(b.username)}, ${hash}, ${text(b.first_name)}, ${text(b.last_name)}, ${email(b.email)}, 'vendor') RETURNING user_id`;
     const [v] = await tx.$queryRaw`INSERT INTO vendors (user_id, business_name, contact_number, address)
       VALUES (${u.user_id}, ${text(b.business_name)}, ${text(b.contact_number)}, ${text(b.address)}) RETURNING vendor_id`;
     return v;
@@ -39,12 +54,15 @@ exports.updateVendor = async (req, res) => {
   const b = req.body;
   need(b, ["business_name", "contact_number", "address", "status", "first_name", "last_name", "email"]);
   const id = intParam(req.params.id);
+  checkEmail(b.email);
   await run(req, async (tx) => {
-    const n = await tx.$executeRaw`UPDATE vendors SET business_name = ${text(b.business_name)}, contact_number = ${text(b.contact_number)},
+    const [v] = await tx.$queryRaw`SELECT user_id FROM vendors WHERE vendor_id = ${id}`;
+    if (!v) throw new HttpError(404, "Vendor not found.");
+    await assertAccountFree(tx, { mail: email(b.email), exceptId: v.user_id });
+    await tx.$executeRaw`UPDATE vendors SET business_name = ${text(b.business_name)}, contact_number = ${text(b.contact_number)},
       address = ${text(b.address)}, status = ${text(b.status)} WHERE vendor_id = ${id}`;
-    if (!n) throw new HttpError(404, "Vendor not found.");
-    await tx.$executeRaw`UPDATE users SET first_name = ${text(b.first_name)}, last_name = ${text(b.last_name)}, email = ${text(b.email)}
-      WHERE user_id = (SELECT user_id FROM vendors WHERE vendor_id = ${id})`;
+    await tx.$executeRaw`UPDATE users SET first_name = ${text(b.first_name)}, last_name = ${text(b.last_name)}, email = ${email(b.email)}
+      WHERE user_id = ${v.user_id}`;
   });
   res.json({ ok: true });
 };
@@ -61,10 +79,15 @@ exports.createUser = async (req, res) => {
   const b = req.body;
   need(b, ["username", "password", "first_name", "last_name", "email", "role"]);
   if (!["admin", "staff"].includes(b.role)) throw new HttpError(400, "Role must be admin or staff (add vendors on the Vendors page).");
+  checkUsername(b.username);
+  checkEmail(b.email);
   checkNewPassword(b.password, b.username);
   const hash = await bcrypt.hash(String(b.password), 10);
-  const [row] = await run(req, (tx) => tx.$queryRaw`INSERT INTO users (username, password_hash, first_name, last_name, email, role)
-    VALUES (${text(b.username)}, ${hash}, ${text(b.first_name)}, ${text(b.last_name)}, ${text(b.email)}, ${b.role}) RETURNING user_id`);
+  const [row] = await run(req, async (tx) => {
+    await assertAccountFree(tx, { username: b.username, mail: email(b.email) });
+    return tx.$queryRaw`INSERT INTO users (username, password_hash, first_name, last_name, email, role)
+      VALUES (${text(b.username)}, ${hash}, ${text(b.first_name)}, ${text(b.last_name)}, ${email(b.email)}, ${b.role}) RETURNING user_id`;
+  });
   res.status(201).json(row);
 };
 
@@ -73,11 +96,13 @@ exports.updateUser = async (req, res) => {
   need(b, ["first_name", "last_name", "email", "status"]);
   const id = intParam(req.params.id);
   if (id === req.user.id && b.status !== "active") throw new HttpError(400, "You cannot deactivate your own account.");
+  checkEmail(b.email);
   if (b.password) checkNewPassword(b.password);
   const hash = b.password ? await bcrypt.hash(String(b.password), 10) : null;   // optional password reset (ends that person's sessions)
   const version = await run(req, async (tx) => {
+    await assertAccountFree(tx, { mail: email(b.email), exceptId: id });
     const n = await tx.$executeRaw`UPDATE users SET first_name = ${text(b.first_name)}, last_name = ${text(b.last_name)},
-      email = ${text(b.email)}, status = ${text(b.status)}, password_hash = COALESCE(${hash}, password_hash) WHERE user_id = ${id}`;
+      email = ${email(b.email)}, status = ${text(b.status)}, password_hash = COALESCE(${hash}, password_hash) WHERE user_id = ${id}`;
     if (!n) throw new HttpError(404, "User not found.");
     return hash && id === req.user.id ? (await tx.$queryRaw`SELECT fn_my_token_version() AS v`)[0].v : null;
   });

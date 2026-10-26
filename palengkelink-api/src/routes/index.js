@@ -15,7 +15,9 @@ const staffOrAdmin = requireRole("admin", "staff");
 const onlyVendor = requireRole("vendor");
 
 // Public (rate-limited: each IP gets a few tries per 15 minutes)
-const limit = (n) => rateLimit({ windowMs: 15 * 60 * 1000, limit: n, message: { error: "Too many tries. Please wait 15 minutes." } });
+const limit = (n, extra = {}) => rateLimit({ windowMs: 15 * 60 * 1000, limit: n, message: { error: "Too many tries. Please wait 15 minutes." }, ...extra });
+// Server-side failures (e.g. the email service is down: 502) do not use up someone's tries; wrong or unknown emails (4xx) still do.
+const notServerErrors = { skipFailedRequests: true, requestWasSuccessful: (req, res) => res.statusCode < 500 };
 // Every API address: at most 300 requests a minute per IP (a normal page load makes about 5), against scripts hammering the site.
 router.use(rateLimit({ windowMs: 60 * 1000, limit: 300, message: { error: "Too many requests. Please slow down and try again in a minute." } }));
 // Anything that changes data must carry the X-Requested-With header our website sends. Another site cannot add a custom
@@ -29,7 +31,7 @@ router.post("/auth/login", limit(20), wrap(auth.login));
 router.post("/auth/login/code", limit(10), wrap(auth.loginCode));
 router.post("/auth/logout", wrap(auth.logout));
 router.post("/auth/register", limit(5), wrap(auth.register));
-router.post("/auth/forgot", limit(5), wrap(auth.forgot));
+router.post("/auth/forgot", limit(5, notServerErrors), wrap(auth.forgot));
 router.post("/auth/reset", limit(10), wrap(auth.reset));
 
 // Everything below needs a valid login token
@@ -39,7 +41,7 @@ router.use(requireLogin);
 router.get("/me", wrap(auth.me));
 router.patch("/me/password", limit(10), wrap(auth.changePassword));
 router.post("/me/logout-everywhere", wrap(auth.logoutEverywhere));
-router.post("/me/two-step/start", limit(5), wrap(auth.twoStepStart));
+router.post("/me/two-step/start", limit(5, notServerErrors), wrap(auth.twoStepStart));
 router.post("/me/two-step/enable", limit(10), wrap(auth.twoStepEnable));
 router.post("/me/two-step/disable", limit(10), wrap(auth.twoStepDisable));
 router.get("/directory", wrap(profiles.list));

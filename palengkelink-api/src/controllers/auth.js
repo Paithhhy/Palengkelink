@@ -3,7 +3,6 @@ const bcrypt = require("bcryptjs");
 const { prisma, asUser } = require("../db");
 const { setSession, clearSession } = require("../session");
 const { HttpError, need } = require("../errors");
-const { waitUntil } = require("@vercel/functions");
 const { sendMail } = require("../mailer");
 
 /** Who is logged in: { user_id, username, first_name, last_name, email, role, vendor_id } */
@@ -39,6 +38,18 @@ function checkNewPassword(password, username = "") {
 }
 exports.checkNewPassword = checkNewPassword;
 
+// One place for these rules (register, forgot password, admin forms). The database has the same username rule (015).
+function checkUsername(username) {
+  if (!/^[A-Za-z0-9._-]{3,40}$/.test(String(username ?? "").trim())) {
+    throw new HttpError(400, "Username: 3-40 letters, numbers, dots, dashes or underscores.");
+  }
+}
+function checkEmail(email) {
+  if (!/^\S+@\S+\.\S+$/.test(String(email ?? "").trim())) throw new HttpError(400, "Please enter a valid email address.");
+}
+exports.checkUsername = checkUsername;
+exports.checkEmail = checkEmail;
+
 // ----- Two-step sign-in: a 6-digit code by email after the password -----
 const newCode = () => String(crypto.randomInt(0, 1000000)).padStart(6, "0");
 const cleanCode = (code) => {
@@ -55,8 +66,7 @@ async function startChallenge(userId, purpose) {
   const code = newCode();
   const [u] = await prisma.$queryRaw`SELECT * FROM fn_create_login_challenge(${userId}::int, ${purpose}, ${sha256(challenge)}, ${codeHash(code)})`;
   const what = purpose === "login" ? "sign in" : "turn on two-step sign-in";
-  // Here we WAIT for the email (unlike "forgot password"): the person already proved who they are, so a failure can be
-  // shown to them instead of a "we sent a code" that never arrives.
+  // Wait for the email, so a failure is shown instead of a "we sent a code" that never arrives.
   await sendMail({
     category: "Two-step sign-in",
     to: u.email,
@@ -65,8 +75,10 @@ async function startChallenge(userId, purpose) {
     html: `<p>Hi ${u.first_name.replace(/[<>&]/g, "")},</p><p>Your code to ${what} is:</p>
       <p style="font-size:30px;font-weight:800;letter-spacing:8px;margin:8px 0 16px">${code}</p>
       <p style="color:#666;font-size:13px">It works once, for 10 minutes. If this was not you, someone knows your password: change it right away on the Account page.</p>`,
-  }).catch((e) => {
+  }).catch(async (e) => {
     console.error("Could not send the sign-in code:", e.message);
+    // Nobody received this code, so it must not stay usable in the database
+    await prisma.$executeRaw`SELECT fn_cancel_login_challenge(${sha256(challenge)})`.catch(() => {});
     throw new HttpError(502, "We could not send the code email right now. Please try again later, or ask the market office for help.");
   });
   return { challenge, email: maskEmail(u.email) };
@@ -140,11 +152,9 @@ exports.register = async (req, res) => {
   if (!["vendor", "staff"].includes(role)) throw new HttpError(400, "You can only register as a vendor or an inspector.");
   need(b, ["username", "password", "first_name", "last_name", "email",
     ...(role === "vendor" ? ["business_name", "contact_number", "address"] : [])]);
+  checkUsername(b.username);
+  checkEmail(b.email);
   checkNewPassword(b.password, b.username);
-  if (!/^[A-Za-z0-9._-]{3,40}$/.test(String(b.username).trim())) {
-    throw new HttpError(400, "Username: 3-40 letters, numbers, dots, dashes or underscores.");
-  }
-  if (!/^\S+@\S+\.\S+$/.test(String(b.email).trim())) throw new HttpError(400, "Please enter a valid email address.");
   const hash = await bcrypt.hash(String(b.password), 10);
   if (role === "vendor") {
     await prisma.$queryRaw`SELECT fn_register_vendor(${String(b.username)}, ${hash}, ${String(b.first_name)}, ${String(b.last_name)},
@@ -156,28 +166,38 @@ exports.register = async (req, res) => {
   res.status(201).json({ ok: true });
 };
 
-// POST /api/auth/forgot  { email }  -> always the same answer, so nobody can test which emails are registered.
+// POST /api/auth/forgot  { email }  -> only the email of an ACTIVE account is accepted (anything else: a clear error).
 // The email has a 6-digit code AND a link; either one resets the password (once, within 30 minutes).
+// Rate limit: 5 tries per IP per 15 minutes (routes/index.js), so the answer cannot be used to test many emails.
 exports.forgot = async (req, res) => {
   need(req.body, ["email"]);
+  const email = String(req.body.email).trim();
+  checkEmail(email);
   const token = crypto.randomBytes(32).toString("base64url");
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
-  const [u] = await prisma.$queryRaw`SELECT * FROM fn_create_password_reset(${String(req.body.email)}, ${sha256(token)}, ${codeHash(code)})`;
-  if (u) {
-    const link = `${appUrl(req)}/#reset/${token}`;
-    // Answer right away (waiting only when the email exists would tell people which emails are registered),
-    // but tell Vercel to keep this function running until the email is sent. Locally, waitUntil does nothing.
-    waitUntil(sendMail({
-      to: u.email,
-      subject: `PalengkeLink: your verification code is ${code}`,
-      text: `Hi ${u.first_name},\n\nYour verification code is: ${code}\n\nType it on the "Forgot password" page, or open this link to choose a new password:\n${link}\n\nThe code and the link work once, for 30 minutes.\nIf you did not ask for this, you can ignore this email.`,
-      html: `<p>Hi ${u.first_name.replace(/[<>&]/g, "")},</p><p>Your verification code is:</p>
-        <p style="font-size:30px;font-weight:800;letter-spacing:8px;margin:8px 0 16px">${code}</p>
-        <p>Type it on the "Forgot password" page, or click the button to choose a new password.</p>
-        <p><a href="${link}" style="background:#1f8a4c;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Reset my password</a></p>
-        <p style="color:#666;font-size:13px">The code and the link work once, for 30 minutes. If you did not ask for this, you can ignore this email.</p>`,
-    }).catch((e) => console.error("Could not send the reset email:", e.message)));
+  const [u] = await prisma.$queryRaw`SELECT * FROM fn_create_password_reset(${email}, ${sha256(token)}, ${codeHash(code)})`;
+  if (!u) {
+    throw new HttpError(404, "We could not find an account we can send a code to with this email. Check the spelling and use the email you registered with. "
+      + "New registrations can reset their password after the market office approves them.");
   }
+  const link = `${appUrl(req)}/#reset/${token}`;
+  // Wait for the email, so a sending problem is shown instead of a "we sent a code" that never arrives.
+  await sendMail({
+    category: "Password reset",
+    to: u.email,
+    subject: `PalengkeLink: your verification code is ${code}`,
+    text: `Hi ${u.first_name},\n\nYour verification code is: ${code}\n\nType it on the "Forgot password" page, or open this link to choose a new password:\n${link}\n\nThe code and the link work once, for 30 minutes.\nIf you did not ask for this, you can ignore this email.`,
+    html: `<p>Hi ${u.first_name.replace(/[<>&]/g, "")},</p><p>Your verification code is:</p>
+      <p style="font-size:30px;font-weight:800;letter-spacing:8px;margin:8px 0 16px">${code}</p>
+      <p>Type it on the "Forgot password" page, or click the button to choose a new password.</p>
+      <p><a href="${link}" style="background:#1f8a4c;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Reset my password</a></p>
+      <p style="color:#666;font-size:13px">The code and the link work once, for 30 minutes. If you did not ask for this, you can ignore this email.</p>`,
+  }).catch(async (e) => {
+    console.error("Could not send the reset email:", e.message);
+    // Nobody received this code / link, so it must not stay usable in the database
+    await prisma.$executeRaw`SELECT fn_cancel_password_reset(${sha256(token)})`.catch(() => {});
+    throw new HttpError(502, "We could not send the email right now. Please try again later, or ask the market office for help.");
+  });
   res.json({ ok: true });
 };
 

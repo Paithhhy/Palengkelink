@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
-    "@vercel/functions": "^2.2.13",
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.6.1",
     "express": "^4.22.3",

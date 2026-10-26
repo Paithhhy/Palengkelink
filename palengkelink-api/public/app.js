@@ -104,10 +104,10 @@ function toast(message, bad = false) {
 // ---------- New passwords: the same rules as the server (src/controllers/auth.js checkNewPassword) ----------
 // [checklist text, test, error message]
 const PW_RULES = [
-  ["8 to 72 characters", (p) => p.length >= 8 && p.length <= 72, "The password needs 8 to 72 characters."],
-  ["Has a letter", (p) => /[A-Za-z]/.test(p), "The password needs at least one letter."],
-  ["Has a number", (p) => /\d/.test(p), "The password needs at least one number."],
-  ["Does not contain the username", (p, name) => !(name.length >= 3 && p.toLowerCase().includes(name)), "The password must not contain the username."],
+  ["8–72 characters", (p) => p.length >= 8 && p.length <= 72, "The password needs 8 to 72 characters."],
+  ["A letter", (p) => /[A-Za-z]/.test(p), "The password needs at least one letter."],
+  ["A number", (p) => /\d/.test(p), "The password needs at least one number."],
+  ["Not the username", (p, name) => !(name.length >= 3 && p.toLowerCase().includes(name)), "The password must not contain the username."],
 ];
 /** The username a new-password box belongs to: the Register form's, or the signed-in person's. */
 const pwUsername = (input) => String(input.dataset.user || input.form?.username?.value || session.user?.username || "").trim().toLowerCase();
@@ -121,19 +121,21 @@ function checkPassword(p, username = "") {
 
 /** Live checklist under a new-password box (input[data-pw]); also shows whether the confirm box matches. */
 function updatePwChecklist(input) {
-  const label = input.closest("label");
-  let list = label.nextElementSibling;
+  // Full width under the password row (on Register the box shares a two-column row with the username)
+  const anchor = input.closest(".two") || input.closest("label");
+  let list = anchor.nextElementSibling;
   if (!list?.classList.contains("pwcheck")) {
     list = document.createElement("ul");
     list.className = "pwcheck";
-    label.after(list);
+    list.setAttribute("aria-label", "Password rules");
+    anchor.after(list);
   }
   const p = input.value;
   const name = pwUsername(input);
   const confirmBox = input.form?.confirm;
   const rules = PW_RULES.map(([text, ok]) => [text, ok(p, name)]);
-  if (confirmBox) rules.push(["Both passwords match", p !== "" && p === confirmBox.value]);
-  list.innerHTML = rules.map(([text, ok]) => `<li class="${ok ? "ok" : ""}">${ok ? "✓" : "○"} ${esc(text)}</li>`).join("");
+  if (confirmBox) rules.push(["Passwords match", p !== "" && p === confirmBox.value]);
+  list.innerHTML = rules.map(([text, ok]) => `<li class="${ok ? "ok" : ""}"><i aria-hidden="true">${ok ? "✓" : ""}</i>${esc(text)}</li>`).join("");
 }
 document.addEventListener("input", (e) => {
   const box = e.target.matches?.("[data-pw]") ? e.target : e.target.form?.querySelector("[data-pw]");
@@ -332,7 +334,7 @@ const views = {
         <h2>${greeting()}, ${esc(session.user.first_name)}!</h2>
         <p>${stalls.length} stalls · ${s.occupied_stalls} occupied · ${open} open maintenance request(s)</p></div>
         <div class="acts">${isAdmin
-          ? `<button data-act="generate">🧾 Create monthly bills</button><button class="glass" data-act="addVendor">＋ Register vendor</button>`
+          ? `<button data-act="generate">🧾 Create monthly bills</button><button class="glass" data-act="addVendor">＋ Register vendor</button><button class="glass" data-act="addInspector">＋ Register inspector</button>`
           : `<button data-act="addInspection">📋 Record inspection</button>`}</div></section>
       ${isAdmin ? pendingList(users) + suggestionList(ideas) : ""}
       <div class="grid">
@@ -599,6 +601,17 @@ const stallFields = (isAdmin) => [
 const supplierFields = [
   { name: "supplier_name", label: "Supplier name" }, { name: "contact_number", label: "Contact number" }, { name: "address", label: "Address" },
 ];
+/** New admin / inspector account. fixedRole = "staff" for the dashboard's "Register inspector" (no role choice). */
+const accountForm = (fixedRole) => openForm({
+  title: fixedRole ? "Register inspector" : "Add admin / inspector account",
+  submit: fixedRole ? "Register" : "Create",
+  done: fixedRole ? "Inspector registered. They can sign in now." : "Account created",
+  fields: [{ name: "first_name", label: "First name" }, { name: "last_name", label: "Last name" },
+    { name: "email", label: "Email", type: "email", wide: true, hint: "Used for “Forgot password” and two-step sign-in codes" },
+    { name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, newPassword: true },
+    ...(fixedRole ? [] : [{ name: "role", label: "Role", type: "select", options: [["staff", ROLE_NAMES.staff], ["admin", ROLE_NAMES.admin]] }])],
+  onSubmit: (d) => { checkPassword(d.password, d.username); return api("POST", "/users", fixedRole ? { ...d, role: fixedRole } : d); },
+});
 const setStatus = async (id, status, message) => {
   try { await api("PATCH", `/users/${id}/status`, { status }); toast(message); render(); } catch (ex) { toast(ex.message, true); }
 };
@@ -843,13 +856,8 @@ const actions = {
   },
 
   // Accounts (admin)
-  addUser: () => openForm({
-    title: "Add admin / inspector account", submit: "Create", done: "Account created",
-    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, newPassword: true },
-      { name: "first_name", label: "First name" }, { name: "last_name", label: "Last name" }, { name: "email", label: "Email", type: "email" },
-      { name: "role", label: "Role", type: "select", options: [["staff", ROLE_NAMES.staff], ["admin", ROLE_NAMES.admin]] }],
-    onSubmit: (d) => { checkPassword(d.password, d.username); return api("POST", "/users", d); },
-  }),
+  addUser: () => accountForm(),
+  addInspector: () => accountForm("staff"),   // dashboard shortcut: no need to wait for a self-registration
   editUser: (id) => {
     const u = find("users", "user_id", id);
     openForm({
@@ -1056,7 +1064,7 @@ authForm("forgotForm", async (d, form) => {
   resetEmail = d.email.trim();
   await api("POST", "/auth/forgot", { email: resetEmail });
   form.reset();
-  $("codeText").textContent = `If an account uses ${resetEmail}, we sent it a 6-digit code (and a reset link). It works for 30 minutes.`;
+  $("codeText").textContent = `We sent a 6-digit code (and a reset link) to ${resetEmail}. It works for 30 minutes.`;
   showAuth("code");
 });
 authForm("codeForm", async (d, form) => {

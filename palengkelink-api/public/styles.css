@@ -363,11 +363,14 @@ dialog::backdrop{background:#06140bb3;backdrop-filter:blur(2px)}
 }
 
 /* ---------- New-password checklist + Security card ---------- */
-.pwcheck{list-style:none;margin:-6px 0 0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:12.5px;color:var(--mut)}
-.pwcheck li.ok{color:var(--ok);font-weight:600}
+.pwcheck{list-style:none;margin:-4px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.pwcheck li{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 4px;border-radius:99px;border:1px solid var(--bd);font-size:12.5px;line-height:1.4;color:var(--mut);white-space:nowrap;transition:color .15s,border-color .15s,background .15s}
+.pwcheck i{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;border:1.5px solid currentColor;font-size:10px;font-style:normal;font-weight:800;opacity:.7}
+.pwcheck li.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 12%,transparent);font-weight:600}
+.pwcheck li.ok i{background:var(--ok);border-color:var(--ok);color:#fff;opacity:1}
 .fields .pwcheck{grid-column:1/-1}
 .sec-row{display:flex;align-items:center;gap:14px;justify-content:space-between;padding:12px 0;border-top:1px solid var(--bd)}
 .sec-row:first-of-type{border-top:0}
 .sec-row>div{display:grid;gap:3px;min-width:0}
 .sec-row button{flex-shrink:0}
-@media(max-width:700px){.sec-row{flex-direction:column;align-items:stretch}.pwcheck{grid-template-columns:1fr}}
+@media(max-width:700px){.sec-row{flex-direction:column;align-items:stretch}}
