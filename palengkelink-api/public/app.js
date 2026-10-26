@@ -5,17 +5,22 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* private mode */ } },
 };
-const session = { token: store.get("pl_token"), user: null, avatar: null };
+// The login is an HttpOnly cookie set by the server: this script cannot read it (so an injected script cannot steal it),
+// and the browser sends it with every /api request by itself.
+store.set("pl_token", null);   // remove the token older versions kept in localStorage
+const session = { user: null, avatar: null };
 const cache = {};   // last loaded lists, used to fill the edit forms
 
 async function api(method, path, body) {
   const res = await fetch("/api" + path, {
     method,
-    headers: { "content-type": "application/json", ...(session.token ? { authorization: "Bearer " + session.token } : {}) },
+    credentials: "same-origin",
+    // X-Requested-With proves the request comes from this website (see routes/index.js)
+    headers: { "content-type": "application/json", "x-requested-with": "PalengkeLink" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && session.token && !path.startsWith("/auth/")) logout("Your session ended. Please sign in again.");
+  if (res.status === 401 && session.user && !path.startsWith("/auth/")) logout("Your session ended. Please sign in again.");
   if (!res.ok) throw new Error(data.error || "Something went wrong.");
   return data;
 }
@@ -96,6 +101,46 @@ function toast(message, bad = false) {
   t.timer = setTimeout(() => (t.className = ""), bad ? 4500 : 2500);
 }
 
+// ---------- New passwords: the same rules as the server (src/controllers/auth.js checkNewPassword) ----------
+// [checklist text, test, error message]
+const PW_RULES = [
+  ["8 to 72 characters", (p) => p.length >= 8 && p.length <= 72, "The password needs 8 to 72 characters."],
+  ["Has a letter", (p) => /[A-Za-z]/.test(p), "The password needs at least one letter."],
+  ["Has a number", (p) => /\d/.test(p), "The password needs at least one number."],
+  ["Does not contain the username", (p, name) => !(name.length >= 3 && p.toLowerCase().includes(name)), "The password must not contain the username."],
+];
+/** The username a new-password box belongs to: the Register form's, or the signed-in person's. */
+const pwUsername = (input) => String(input.dataset.user || input.form?.username?.value || session.user?.username || "").trim().toLowerCase();
+
+/** Throws the first broken rule (so the form shows it before anything is sent). */
+function checkPassword(p, username = "") {
+  const name = String(username).trim().toLowerCase();
+  const broken = PW_RULES.find(([, ok]) => !ok(String(p), name));
+  if (broken) throw new Error(broken[2]);
+}
+
+/** Live checklist under a new-password box (input[data-pw]); also shows whether the confirm box matches. */
+function updatePwChecklist(input) {
+  const label = input.closest("label");
+  let list = label.nextElementSibling;
+  if (!list?.classList.contains("pwcheck")) {
+    list = document.createElement("ul");
+    list.className = "pwcheck";
+    label.after(list);
+  }
+  const p = input.value;
+  const name = pwUsername(input);
+  const confirmBox = input.form?.confirm;
+  const rules = PW_RULES.map(([text, ok]) => [text, ok(p, name)]);
+  if (confirmBox) rules.push(["Both passwords match", p !== "" && p === confirmBox.value]);
+  list.innerHTML = rules.map(([text, ok]) => `<li class="${ok ? "ok" : ""}">${ok ? "✓" : "○"} ${esc(text)}</li>`).join("");
+}
+document.addEventListener("input", (e) => {
+  const box = e.target.matches?.("[data-pw]") ? e.target : e.target.form?.querySelector("[data-pw]");
+  if (box && (e.target === box || ["confirm", "username"].includes(e.target.name))) updatePwChecklist(box);
+});
+document.addEventListener("focusin", (e) => e.target.matches?.("[data-pw]") && updatePwChecklist(e.target));
+
 // ---------- Pictures: crop + shrink in the browser before saving ----------
 function resizeImage(file, w, h, maxLength) {
   return new Promise((resolve, reject) => {
@@ -141,7 +186,8 @@ function fieldHtml(f, values) {
     control = `<textarea name="${f.name}" rows="4" maxlength="${f.max || 1000}" ${req}>${esc(val)}</textarea>`;
   } else {
     const extra = ["step", "min", "max", "list", "minlength"].filter((k) => f[k] != null).map((k) => `${k}="${esc(f[k])}"`).join(" ");
-    control = `<input name="${f.name}" type="${f.type || "text"}" value="${esc(val)}" ${extra} ${req} autocomplete="${f.type === "password" ? "new-password" : "off"}">`;
+    control = `<input name="${f.name}" type="${f.type || "text"}" value="${esc(val)}" ${extra} ${req} ${f.newPassword ? `data-pw maxlength="72" data-user="${esc(f.pwUser || "")}"` : ""}
+      autocomplete="${f.type === "password" ? (f.newPassword ? "new-password" : "current-password") : "off"}">`;
   }
   return `<label class="${f.wide ? "wide" : ""}">${esc(f.label)}${control}${f.hint ? `<small>${esc(f.hint)}</small>` : ""}</label>`;
 }
@@ -256,6 +302,7 @@ const LOG_TABLES = {
 const LOG_ACTIONS = {
   INSERT: ["Added", ""], UPDATE: ["Changed", "w"], DELETE: ["Removed", "x"],
   LOGIN: ["Signed in", ""], LOGIN_FAIL: ["Wrong password", "w"], LOCKED: ["Account locked", "x"], LOGOUT_ALL: ["Logged out everywhere", "w"],
+  CODE_FAIL: ["Wrong sign-in code", "w"], "2STEP_ON": ["Two-step on", ""], "2STEP_OFF": ["Two-step off", "w"],
 };
 const when = (d) => new Date(d).toLocaleString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 const activityLog = (log) => {
@@ -502,9 +549,9 @@ const views = {
     const list = (cache.users = await get("/users"));
     const rows = list.filter((u) => u.status !== "pending").map((u) => [
       `<span class="who-cell">${avatar(`${u.first_name} ${u.last_name}`, null, "sm2")}<span><b>${esc(u.first_name)} ${esc(u.last_name)}</b><small class="mut">@${esc(u.username)}</small></span></span>`,
-      esc(u.email), esc(ROLE_NAMES[u.role]), badge(u.status), btn("editUser", u.user_id, "Edit")]);
+      esc(u.email), esc(ROLE_NAMES[u.role]), badge(u.status), u.two_factor ? `<span class="b">🔐 On</span>` : `<span class="mut">Off</span>`, btn("editUser", u.user_id, "Edit")]);
     return pendingList(list) + head("User accounts", `<button data-act="addUser">＋ Add admin / inspector</button>`, "Vendors register themselves or on the Vendors page") +
-      table(["Name", "Email", "Role", "Status", ""], rows, undefined, "Search name, username, email, role…");
+      table(["Name", "Email", "Role", "Status", "Two-step", ""], rows, undefined, "Search name, username, email, role…");
   },
 
   // ===== My account (everyone) =====
@@ -518,9 +565,15 @@ const views = {
         ${me.vendor_id ? `<a class="btn alt" href="#profile">👤 Edit my public profile</a>` : ""}
         <button class="ghost" data-act="logout">Log out</button></div></div></div>
       <div class="card"><h3>🛡️ Security</h3>
-        <p class="mut small">Think someone else knows your password, or signed in on a phone you lost? Change your password, or sign out everywhere.
-          After 10 wrong passwords in a row, an account is locked for 15 minutes.</p>
-        <div class="acts"><button class="danger" data-act="logoutEverywhere">Log out of all devices</button></div></div>
+        <div class="sec-row"><div><b>Two-step sign-in ${me.two_factor ? `<span class="b">On</span>` : `<span class="b w">Off</span>`}</b>
+          <small class="mut">${me.two_factor
+            ? `After your password, we email a 6-digit code to ${esc(me.email)}. A stolen password alone cannot open your account.`
+            : `Recommended. After your password, we also email you a 6-digit code, so a stolen password alone cannot open your account.`}</small></div>
+          ${me.two_factor ? `<button class="ghost" data-act="twoStepOff">Turn off</button>` : `<button data-act="twoStepOn">🔐 Turn on</button>`}</div>
+        <div class="sec-row"><div><b>Signed in somewhere else?</b>
+          <small class="mut">Think someone knows your password, or lost a phone? Change your password, or sign out on every device.
+            After 10 wrong passwords in a row, an account is locked for 15 minutes.</small></div>
+          <button class="danger" data-act="logoutEverywhere">Log out of all devices</button></div></div>
       <p class="mut small">Forgot your password some day? Use “Forgot password?” on the sign-in page. A verification code is sent to ${esc(me.email)}.</p>
       ${log ? activityLog(log) : ""}`;
   },
@@ -560,9 +613,9 @@ const actions = {
   // Vendors
   addVendor: () => openForm({
     title: "Register vendor", submit: "Register", done: "Vendor registered",
-    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, hint: "8+ characters with letters and numbers" },
+    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, newPassword: true },
       ...vendorFields],
-    onSubmit: (d) => api("POST", "/vendors", d),
+    onSubmit: (d) => { checkPassword(d.password, d.username); return api("POST", "/vendors", d); },
   }),
   editVendor: (id) => openForm({
     title: "Edit vendor", values: find("vendors", "vendor_id", id),
@@ -792,10 +845,10 @@ const actions = {
   // Accounts (admin)
   addUser: () => openForm({
     title: "Add admin / inspector account", submit: "Create", done: "Account created",
-    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, hint: "8+ characters with letters and numbers" },
+    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, newPassword: true },
       { name: "first_name", label: "First name" }, { name: "last_name", label: "Last name" }, { name: "email", label: "Email", type: "email" },
       { name: "role", label: "Role", type: "select", options: [["staff", ROLE_NAMES.staff], ["admin", ROLE_NAMES.admin]] }],
-    onSubmit: (d) => api("POST", "/users", d),
+    onSubmit: (d) => { checkPassword(d.password, d.username); return api("POST", "/users", d); },
   }),
   editUser: (id) => {
     const u = find("users", "user_id", id);
@@ -803,8 +856,13 @@ const actions = {
       title: `Edit account @${u.username}`, values: u,
       fields: [{ name: "first_name", label: "First name" }, { name: "last_name", label: "Last name" }, { name: "email", label: "Email", type: "email" },
         { name: "status", label: "Status", type: "select", options: opts(["active", "inactive", "pending"]), hint: "Only active accounts can sign in." },
-        { name: "password", label: "New password", type: "password", minlength: 8, required: false, hint: "Leave empty to keep it. 8+ characters with letters and numbers. Signs them out everywhere." }],
-      onSubmit: (d) => api("PATCH", `/users/${id}`, d),
+        { name: "password", label: "New password", type: "password", minlength: 8, required: false, newPassword: true, pwUser: u.username, hint: "Leave empty to keep it. A new password signs them out everywhere." },
+        // Shown only when they use two-step sign-in: the way back in for someone who lost access to their email
+        ...(u.two_factor ? [{ name: "two_factor", label: "Two-step sign-in", type: "select", options: [["keep", "On (keep it)"], ["off", "Turn off: they lost access to their email"]] }] : [])],
+      onSubmit: (d) => {
+        if (d.password) checkPassword(d.password, u.username);
+        return api("PATCH", `/users/${id}`, d);
+      },
     });
   },
 
@@ -812,16 +870,33 @@ const actions = {
   changePassword: () => openForm({
     title: "Change password", submit: "Change password", done: "Password changed",
     fields: [{ name: "current_password", label: "Current password", type: "password" },
-      { name: "new_password", label: "New password", type: "password", minlength: 8, hint: "8+ characters with letters and numbers" },
+      { name: "new_password", label: "New password", type: "password", minlength: 8, newPassword: true },
       { name: "confirm", label: "Type the new password again", type: "password" }],
     onSubmit: async (d) => {
       if (d.new_password !== d.confirm) throw new Error("The new passwords do not match.");
-      // Other devices are signed out; this one gets a fresh token.
-      const r = await api("PATCH", "/me/password", d);
-      session.token = r.token;
-      store.set("pl_token", r.token);
+      checkPassword(d.new_password, session.user.username);
+      await api("PATCH", "/me/password", d);   // other devices are signed out; the server gives this one a new cookie
       return "Password changed. Your other devices were signed out.";
     },
+  }),
+  // Two-step sign-in: turning it on needs a code from the email, so nobody locks themselves out with a wrong address.
+  twoStepOn: async (id, el) => {
+    el.disabled = true;
+    try {
+      const { challenge, email } = await api("POST", "/me/two-step/start");
+      openForm({
+        title: "Turn on two-step sign-in", submit: "Turn on", done: "Two-step sign-in is on. Next time, you also need the emailed code.",
+        extra: `<p class="mut small">We sent a 6-digit code to ${esc(email)}. Not there? Check spam. If the email is wrong, ask the market office to fix it first.</p>`,
+        fields: [{ name: "code", label: "Code from the email", wide: true, hint: "6 numbers, works for 10 minutes" }],
+        onSubmit: (d) => api("POST", "/me/two-step/enable", { challenge, code: d.code }),
+      });
+    } catch (ex) { toast(ex.message, true); } finally { el.disabled = false; }
+  },
+  twoStepOff: () => openForm({
+    title: "Turn off two-step sign-in", submit: "Turn off", done: "Two-step sign-in is off",
+    extra: `<p class="mut small">Your account will be protected by your password only.</p>`,
+    fields: [{ name: "password", label: "Your password", type: "password", wide: true }],
+    onSubmit: (d) => api("POST", "/me/two-step/disable", d),
   }),
   logoutEverywhere: async () => {
     if (!confirm("Sign out on every phone and computer, including this one?")) return;
@@ -862,7 +937,7 @@ async function render() {
     const q = main.querySelector(".q");
     if (q && term) { q.value = term; applySearch(q); }
   } catch (ex) {
-    if (mine === renderCount && session.token) main.innerHTML = `<div class="card err">⚠️ ${esc(ex.message)}</div>`;
+    if (mine === renderCount && session.user) main.innerHTML = `<div class="card err">⚠️ ${esc(ex.message)}</div>`;
   }
 }
 
@@ -897,8 +972,8 @@ function start() {
 }
 
 function logout(message) {
-  session.token = session.user = session.avatar = null;
-  store.set("pl_token", null);
+  if (session.user) api("POST", "/auth/logout").catch(() => {});   // the server removes the login cookie
+  session.user = session.avatar = null;
   $("app").hidden = true;
   $("main").innerHTML = "";
   shownRoute = "";
@@ -942,12 +1017,23 @@ function authForm(id, send) {
   };
 }
 
+let loginChallenge = null;   // two-step sign-in: id of the code that was emailed
 authForm("loginForm", async (d, form) => {
-  const { token, user } = await api("POST", "/auth/login", { username: d.username.trim(), password: d.password });
-  session.token = token;
-  session.user = user;
-  store.set("pl_token", token);
+  const r = await api("POST", "/auth/login", { username: d.username.trim(), password: d.password });
   form.reset();
+  if (r.twoStep) {   // password was right; now the code from the email
+    loginChallenge = r.challenge;
+    $("loginCodeText").textContent = `We sent a 6-digit code to ${r.email}. It works for 10 minutes.`;
+    return showAuth("loginCode");
+  }
+  session.user = r.user;
+  start();
+});
+authForm("loginCodeForm", async (d, form) => {
+  const { user } = await api("POST", "/auth/login/code", { challenge: loginChallenge, code: d.code.trim() });
+  form.reset();
+  loginChallenge = null;
+  session.user = user;
   start();
 });
 // Register as vendor or inspector: inspectors have no business, so those fields are hidden and disabled (not required, not sent).
@@ -958,6 +1044,7 @@ function syncRegisterRole() {
 }
 $("registerForm").addEventListener("change", (e) => e.target.name === "role" && syncRegisterRole());
 authForm("registerForm", async (d, form) => {
+  checkPassword(d.password, d.username);
   if (d.password !== d.confirm) throw new Error("The passwords do not match.");
   await api("POST", "/auth/register", d);
   form.reset();
@@ -973,6 +1060,7 @@ authForm("forgotForm", async (d, form) => {
   showAuth("code");
 });
 authForm("codeForm", async (d, form) => {
+  checkPassword(d.new_password);
   if (d.new_password !== d.confirm) throw new Error("The passwords do not match.");
   await api("POST", "/auth/reset", { email: resetEmail, code: d.code.trim(), new_password: d.new_password });
   form.reset();
@@ -980,6 +1068,7 @@ authForm("codeForm", async (d, form) => {
   showDone("Password changed", "You can now sign in with your new password.");
 });
 authForm("resetForm", async (d, form) => {
+  checkPassword(d.new_password);
   if (d.new_password !== d.confirm) throw new Error("The passwords do not match.");
   await api("POST", "/auth/reset", { token: resetToken, new_password: d.new_password });
   form.reset();
@@ -1029,13 +1118,10 @@ window.addEventListener("hashchange", () => session.user && render());
 (async () => {
   if (location.hash.startsWith("#reset/")) {   // link from the "forgot password" email
     resetToken = location.hash.slice("#reset/".length);
-    session.token = null;
-    store.set("pl_token", null);
     return showAuth("reset");
   }
-  if (!session.token) return showAuth("login");
-  try {
+  try {   // still signed in? (the cookie is sent by itself; without one, /me answers 401)
     session.user = await get("/me");
     start();
-  } catch { logout(); }
+  } catch { showAuth("login"); }
 })();

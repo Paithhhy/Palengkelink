@@ -1,15 +1,16 @@
 const jwt = require("jsonwebtoken");
 const { prisma } = require("../db");
 const { HttpError } = require("../errors");
+const { readToken } = require("../session");
 
 /**
- * Reads "Authorization: Bearer <token>" and puts { id, role } on req.user.
+ * Reads the login cookie (see session.js) and puts { id, role } on req.user.
  * Besides the signature, every request asks the database (fn_session_check) whether the account is still active and
  * whether the token's version is current. So a stolen token stops working as soon as the password changes, the person
  * uses "Log out of all devices", or the admin disables the account. The role also comes from the database, not the token.
  */
 async function requireLogin(req, res, next) {
-  const token = (req.headers.authorization || "").replace(/^Bearer /, "");
+  const token = readToken(req);
   let payload;
   try {
     payload = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ["HS256"] });

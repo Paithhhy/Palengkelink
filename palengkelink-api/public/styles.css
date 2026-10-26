@@ -361,3 +361,13 @@ dialog::backdrop{background:#06140bb3;backdrop-filter:blur(2px)}
   #nav a{padding:7px 12px;font-size:14px}
   .side-user{padding:10px 16px}
 }
+
+/* ---------- New-password checklist + Security card ---------- */
+.pwcheck{list-style:none;margin:-6px 0 0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:12.5px;color:var(--mut)}
+.pwcheck li.ok{color:var(--ok);font-weight:600}
+.fields .pwcheck{grid-column:1/-1}
+.sec-row{display:flex;align-items:center;gap:14px;justify-content:space-between;padding:12px 0;border-top:1px solid var(--bd)}
+.sec-row:first-of-type{border-top:0}
+.sec-row>div{display:grid;gap:3px;min-width:0}
+.sec-row button{flex-shrink:0}
+@media(max-width:700px){.sec-row{flex-direction:column;align-items:stretch}.pwcheck{grid-template-columns:1fr}}

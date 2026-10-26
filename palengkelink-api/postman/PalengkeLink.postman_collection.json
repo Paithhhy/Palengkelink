@@ -1,0 +1,238 @@
+{
+  "info": {
+    "name": "PalengkeLink API",
+    "description": "Sign-in, two-step sign-in and security checks for the PalengkeLink API.\n\nSet the collection variables first (baseUrl, username, password). The login is an HttpOnly cookie (pl_session): Postman keeps it after \"Sign in\" and sends it with the next requests by itself. Every request gets the X-Requested-With: PalengkeLink header from the collection script (the API refuses changes without it).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "description": "Or your https://....vercel.app address" },
+    { "key": "username", "value": "", "description": "An active account" },
+    { "key": "password", "value": "", "description": "Its password" },
+    { "key": "code", "value": "", "description": "The 6-digit code from the email (two-step sign-in)" },
+    { "key": "challenge", "value": "", "description": "Filled in by \"Sign in\" when two-step sign-in is on" },
+    { "key": "twoStepChallenge", "value": "", "description": "Filled in by \"Two-step: send code\"" },
+    { "key": "newPassword", "value": "", "description": "For \"Change password\"" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// The API only accepts changes from requests that carry this header (CSRF protection).",
+          "pm.request.headers.upsert({ key: 'X-Requested-With', value: 'PalengkeLink' });"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Sign in",
+      "item": [
+        {
+          "name": "Sign in",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "const body = pm.response.json();",
+            "pm.test('Password accepted (200)', () => pm.response.to.have.status(200));",
+            "if (body.twoStep) {",
+            "  pm.collectionVariables.set('challenge', body.challenge);",
+            "  console.log('Two-step sign-in is on: a code was sent to ' + body.email + '. Put it in the \"code\" variable, then run \"Sign in: code\".');",
+            "  pm.test('Two-step: code emailed, no login cookie yet', () => pm.expect(pm.cookies.has('pl_session')).to.be.false);",
+            "} else {",
+            "  pm.test('Signed in: login cookie received', () => pm.expect(pm.response.headers.get('Set-Cookie') || '').to.include('pl_session='));",
+            "  pm.test('Cookie is HttpOnly + SameSite=Strict', () => { const c = pm.response.headers.get('Set-Cookie') || ''; pm.expect(c).to.include('HttpOnly'); pm.expect(c).to.include('SameSite=Strict'); });",
+            "}"
+          ] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}" },
+            "url": "{{baseUrl}}/api/auth/login",
+            "description": "Without two-step sign-in: answers { user } and sets the login cookie.\nWith two-step sign-in: answers { twoStep: true, challenge, email } and emails a code. Then run \"Sign in: code\"."
+          }
+        },
+        {
+          "name": "Sign in: code (two-step only)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Code accepted, signed in (200)', () => pm.response.to.have.status(200));",
+            "pm.test('Login cookie received', () => pm.expect(pm.response.headers.get('Set-Cookie') || '').to.include('pl_session='));"
+          ] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"challenge\": \"{{challenge}}\",\n  \"code\": \"{{code}}\"\n}" },
+            "url": "{{baseUrl}}/api/auth/login/code",
+            "description": "Put the 6 numbers from the email in the collection variable \"code\" first. Works for 10 minutes; after 5 wrong codes, run \"Sign in\" again."
+          }
+        },
+        {
+          "name": "Who am I",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Signed in (200)', () => pm.response.to.have.status(200));",
+            "pm.test('Shows the account and its two-step setting', () => { const u = pm.response.json(); pm.expect(u).to.have.property('username'); pm.expect(u).to.have.property('two_factor'); });"
+          ] } }],
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/me" }
+        },
+        {
+          "name": "Sign out",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Signed out (200)', () => pm.response.to.have.status(200));",
+            "pm.test('Login cookie removed', () => pm.expect(pm.response.headers.get('Set-Cookie') || '').to.include('pl_session=;'));"
+          ] } }],
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/logout" }
+        }
+      ]
+    },
+    {
+      "name": "2. Two-step sign-in (sign in first)",
+      "item": [
+        {
+          "name": "Two-step: send code",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Code emailed (200)', () => pm.response.to.have.status(200));",
+            "const body = pm.response.json();",
+            "pm.collectionVariables.set('twoStepChallenge', body.challenge);",
+            "console.log('Code sent to ' + body.email + '. Put it in the \"code\" variable, then run \"Two-step: turn on\".');"
+          ] } }],
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/me/two-step/start" }
+        },
+        {
+          "name": "Two-step: turn on",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Two-step sign-in is on (200)', () => pm.response.to.have.status(200));"
+          ] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"challenge\": \"{{twoStepChallenge}}\",\n  \"code\": \"{{code}}\"\n}" },
+            "url": "{{baseUrl}}/api/me/two-step/enable"
+          }
+        },
+        {
+          "name": "Two-step: turn off",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Two-step sign-in is off (200)', () => pm.response.to.have.status(200));"
+          ] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"password\": \"{{password}}\"\n}" },
+            "url": "{{baseUrl}}/api/me/two-step/disable"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Passwords (sign in first)",
+      "item": [
+        {
+          "name": "Change password: weak password is refused",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Refused (400)', () => pm.response.to.have.status(400));",
+            "pm.test('Explains why', () => pm.expect(pm.response.json().error).to.match(/letter|number|characters|guess|username/));"
+          ] } }],
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"current_password\": \"{{password}}\",\n  \"new_password\": \"abcdefgh\"\n}" },
+            "url": "{{baseUrl}}/api/me/password"
+          }
+        },
+        {
+          "name": "Change password",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Password changed (200)', () => pm.response.to.have.status(200));",
+            "pm.test('This device got a new login cookie (others are signed out)', () => pm.expect(pm.response.headers.get('Set-Cookie') || '').to.include('pl_session='));",
+            "if (pm.response.code === 200) { pm.collectionVariables.set('password', pm.collectionVariables.get('newPassword')); console.log('The \"password\" variable now holds the new password.'); }"
+          ] } }],
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"current_password\": \"{{password}}\",\n  \"new_password\": \"{{newPassword}}\"\n}" },
+            "url": "{{baseUrl}}/api/me/password",
+            "description": "Set the \"newPassword\" variable first (8+ characters, letters and numbers, not the username)."
+          }
+        },
+        {
+          "name": "Log out of all devices",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Every session ended (200)', () => pm.response.to.have.status(200));"
+          ] } }],
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/me/logout-everywhere" }
+        }
+      ]
+    },
+    {
+      "name": "4. Security checks (no sign-in needed)",
+      "item": [
+        {
+          "name": "No login cookie is refused",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "pm.request.headers.upsert({ key: 'Cookie', value: 'pl_session=' });"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('Refused (401)', () => pm.response.to.have.status(401));"
+            ] } }
+          ],
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/users" }
+        },
+        {
+          "name": "Forged login cookie is refused",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "// A token that claims to be admin #1 but is signed with a guessed secret",
+              "const b = (o) => btoa(JSON.stringify(o)).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+              "const fake = b({ alg: 'HS256', typ: 'JWT' }) + '.' + b({ id: 1, role: 'admin', v: 0 }) + '.invalidsignature';",
+              "pm.request.headers.upsert({ key: 'Cookie', value: 'pl_session=' + fake });"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('Refused (401)', () => pm.response.to.have.status(401));"
+            ] } }
+          ],
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/users" }
+        },
+        {
+          "name": "Request from another website is refused (CSRF)",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "// Another site cannot add the X-Requested-With header, so remove it to act like one",
+              "pm.request.headers.remove('X-Requested-With');"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('Refused (403)', () => pm.response.to.have.status(403));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"anything\"\n}" },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        },
+        {
+          "name": "Wrong password is refused",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Refused (401)', () => pm.response.to.have.status(401));",
+            "pm.test('Does not say whether the username exists', () => pm.expect(pm.response.json().error).to.eql('Wrong username or password.'));"
+          ] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"no-such-user-xyz\",\n  \"password\": \"Wrong12345\"\n}" },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        },
+        {
+          "name": "Security headers are sent",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Content-Security-Policy: only our own scripts', () => pm.expect(pm.response.headers.get('Content-Security-Policy')).to.include(\"script-src 'self'\"));",
+            "pm.test('Cannot be shown inside another site', () => pm.expect(pm.response.headers.get('Content-Security-Policy')).to.include(\"frame-ancestors 'none'\"));",
+            "pm.test('No MIME sniffing', () => pm.expect(pm.response.headers.get('X-Content-Type-Options')).to.eql('nosniff'));"
+          ] } }],
+          "request": { "method": "GET", "url": "{{baseUrl}}/" }
+        }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const { prisma, asUser } = require("../db");
+const { setSession, clearSession } = require("../session");
 const { HttpError, need } = require("../errors");
 const { waitUntil } = require("@vercel/functions");
 const { sendMail } = require("../mailer");
@@ -39,8 +39,55 @@ function checkNewPassword(password, username = "") {
 }
 exports.checkNewPassword = checkNewPassword;
 
-/** Login token: { id, role, v } where v = token version (raising it in the database ends every session). */
-const signToken = (user, version) => jwt.sign({ id: user.id, role: user.role, v: version }, process.env.JWT_SECRET, { algorithm: "HS256", expiresIn: "8h" });
+// ----- Two-step sign-in: a 6-digit code by email after the password -----
+const newCode = () => String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+const cleanCode = (code) => {
+  const c = String(code ?? "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(c)) throw new HttpError(400, "The code has 6 numbers.");
+  return c;
+};
+/** "josedimitri@gmail.com" -> "jo•••••••@gmail.com" (shown on screen, so the full address is not revealed) */
+const maskEmail = (email) => String(email).replace(/^(.{1,2})[^@]*/, (m, start) => start + "•".repeat(Math.max(3, m.length - start.length)));
+
+/** Make a challenge, email its code, and return { challenge, email } for the browser. */
+async function startChallenge(userId, purpose) {
+  const challenge = crypto.randomBytes(32).toString("base64url");
+  const code = newCode();
+  const [u] = await prisma.$queryRaw`SELECT * FROM fn_create_login_challenge(${userId}::int, ${purpose}, ${sha256(challenge)}, ${codeHash(code)})`;
+  const what = purpose === "login" ? "sign in" : "turn on two-step sign-in";
+  // Here we WAIT for the email (unlike "forgot password"): the person already proved who they are, so a failure can be
+  // shown to them instead of a "we sent a code" that never arrives.
+  await sendMail({
+    category: "Two-step sign-in",
+    to: u.email,
+    subject: `PalengkeLink: your sign-in code is ${code}`,
+    text: `Hi ${u.first_name},\n\nYour code to ${what} is: ${code}\n\nIt works once, for 10 minutes.\nIf this was not you, someone knows your password: change it right away on the Account page.`,
+    html: `<p>Hi ${u.first_name.replace(/[<>&]/g, "")},</p><p>Your code to ${what} is:</p>
+      <p style="font-size:30px;font-weight:800;letter-spacing:8px;margin:8px 0 16px">${code}</p>
+      <p style="color:#666;font-size:13px">It works once, for 10 minutes. If this was not you, someone knows your password: change it right away on the Account page.</p>`,
+  }).catch((e) => {
+    console.error("Could not send the sign-in code:", e.message);
+    throw new HttpError(502, "We could not send the code email right now. Please try again later, or ask the market office for help.");
+  });
+  return { challenge, email: maskEmail(u.email) };
+}
+
+/** Check a code; returns the user id or throws a clear message. */
+async function checkChallenge(challenge, purpose, code) {
+  const c = cleanCode(code);
+  const [r] = await prisma.$queryRaw`SELECT * FROM fn_check_login_challenge(${sha256(String(challenge ?? ""))}, ${purpose}, ${codeHash(c)})`;
+  if (r.result === "wrong") throw new HttpError(400, "That code is wrong. Please check the email and try again.");
+  if (r.result === "locked") throw new HttpError(400, "Too many wrong codes. Please start again.");
+  if (r.result !== "ok") throw new HttpError(400, "This code has expired. Please start again.");
+  return r.user_id;
+}
+
+/** Password (and code, if needed) are right: count the sign-in, set the login cookie, answer with who it is. */
+async function finishLogin(req, res, user) {
+  const [{ version }] = await prisma.$queryRaw`SELECT fn_login_succeeded(${user.id}::int) AS version`;
+  setSession(req, res, user, version);
+  res.json({ user: await me(user) });
+}
 
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 // 6-digit codes are easy to guess offline, so they are hashed with a server secret (HMAC) instead of plain SHA-256.
@@ -65,8 +112,24 @@ exports.login = async (req, res) => {
   if (u.status === "pending") throw new HttpError(403, "Your registration is waiting for approval by the market office.");
   if (u.status !== "active") throw new HttpError(403, "This account is disabled. Please contact the market office.");
   const user = { id: u.user_id, role: u.role };
-  const [{ version }] = await prisma.$queryRaw`SELECT fn_login_succeeded(${u.user_id}::int) AS version`;
-  res.json({ token: signToken(user, version), user: await me(user) });
+  const [{ is_on }] = await prisma.$queryRaw`SELECT fn_two_factor_on(${u.user_id}::int) AS is_on`;
+  if (is_on) return res.json({ twoStep: true, ...(await startChallenge(u.user_id, "login")) });   // no session yet: the code comes first
+  await finishLogin(req, res, user);
+};
+
+// POST /api/auth/login/code  { challenge, code }  -> second step of the sign-in
+exports.loginCode = async (req, res) => {
+  need(req.body, ["challenge", "code"]);
+  const userId = await checkChallenge(req.body.challenge, "login", req.body.code);
+  const [s] = await prisma.$queryRaw`SELECT * FROM fn_session_check(${userId}::int)`;
+  if (!s || s.status !== "active") throw new HttpError(403, "This account is disabled. Please contact the market office.");
+  await finishLogin(req, res, { id: userId, role: s.role });
+};
+
+// POST /api/auth/logout  -> removes the login cookie from this browser
+exports.logout = async (req, res) => {
+  clearSession(req, res);
+  res.json({ ok: true });
 };
 
 // POST /api/auth/register  { role: "vendor" | "staff", ... }  -> account in "pending" status until an admin approves it.
@@ -139,7 +202,10 @@ exports.reset = async (req, res) => {
 };
 
 // GET /api/me
-exports.me = async (req, res) => res.json(await me(req.user));
+exports.me = async (req, res) => {
+  const [user, [{ is_on }]] = await Promise.all([me(req.user), prisma.$queryRaw`SELECT fn_two_factor_on(${req.user.id}::int) AS is_on`]);
+  res.json({ ...user, two_factor: is_on });
+};
 
 // PATCH /api/me/password  { current_password, new_password }
 exports.changePassword = async (req, res) => {
@@ -153,11 +219,34 @@ exports.changePassword = async (req, res) => {
     await tx.$executeRaw`SELECT fn_change_my_password(${hash}::text)`;
     return (await tx.$queryRaw`SELECT fn_my_token_version() AS v`)[0].v;
   });
-  res.json({ ok: true, token: signToken(req.user, version) });
+  setSession(req, res, req.user, version);
+  res.json({ ok: true });
 };
 
 // POST /api/me/logout-everywhere  -> every device is signed out (also this one)
 exports.logoutEverywhere = async (req, res) => {
   await asUser(req.user, (tx) => tx.$queryRaw`SELECT fn_logout_everywhere() AS v`);
+  clearSession(req, res);
+  res.json({ ok: true });
+};
+
+// POST /api/me/two-step/start  -> emails a code; turning two-step sign-in on needs it, so we know the email works
+exports.twoStepStart = async (req, res) => res.json(await startChallenge(req.user.id, "enable"));
+
+// POST /api/me/two-step/enable  { challenge, code }
+exports.twoStepEnable = async (req, res) => {
+  need(req.body, ["challenge", "code"]);
+  const userId = await checkChallenge(req.body.challenge, "enable", req.body.code);
+  if (userId !== req.user.id) throw new HttpError(400, "This code is for another account.");
+  await prisma.$executeRaw`SELECT fn_set_two_factor(${req.user.id}::int, true, ${req.user.id}::int)`;
+  res.json({ ok: true });
+};
+
+// POST /api/me/two-step/disable  { password }  -> the password is asked again, so a forgotten open laptop is not enough
+exports.twoStepDisable = async (req, res) => {
+  need(req.body, ["password"]);
+  const { username } = await me(req.user);
+  if (!(await findWithPassword(username, req.body.password))) throw new HttpError(400, "Your password is wrong.");
+  await prisma.$executeRaw`SELECT fn_set_two_factor(${req.user.id}::int, false, ${req.user.id}::int)`;
   res.json({ ok: true });
 };

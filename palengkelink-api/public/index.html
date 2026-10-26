@@ -37,6 +37,16 @@
       <p class="mut center">New vendor or inspector? <a href="#" class="link" data-auth="register">Create an account</a></p>
     </form>
 
+    <form id="loginCodeForm" class="auth-form" data-panel="loginCode" hidden>
+      <h2>Two-step sign-in 🔐</h2>
+      <p class="mut" id="loginCodeText"></p>
+      <label>Sign-in code<input name="code" class="code-input" inputmode="numeric" autocomplete="one-time-code"
+        pattern="\s*\d{6}\s*" maxlength="7" placeholder="••••••" title="The 6 numbers from the email" required></label>
+      <p class="err" hidden></p>
+      <button class="big">Sign in</button>
+      <p class="mut center">No email? Check your spam folder, or <a href="#" class="link" data-auth="login">sign in again</a> for a new code.</p>
+    </form>
+
     <form id="registerForm" class="auth-form" data-panel="register" hidden>
       <h2>Create an account</h2>
       <p class="mut">The market office will review your registration before you can sign in.</p>
@@ -58,7 +68,7 @@
       </fieldset>
       <div class="two">
         <label>Username<input name="username" autocomplete="username" pattern="[A-Za-z0-9._\-]{3,40}" title="3-40 letters, numbers, dots, dashes or underscores" required></label>
-        <label>Password<span class="pw"><input name="password" type="password" autocomplete="new-password" minlength="8" required>
+        <label>Password<span class="pw"><input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="72" data-pw required>
           <button type="button" class="eye" data-eye aria-label="Show password">👁</button></span></label>
       </div>
       <label>Confirm password<input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
@@ -81,7 +91,7 @@
       <p class="mut" id="codeText"></p>
       <label>Verification code<input name="code" class="code-input" inputmode="numeric" autocomplete="one-time-code"
         pattern="\s*\d{6}\s*" maxlength="7" placeholder="••••••" title="The 6 numbers from the email" required></label>
-      <label>New password<span class="pw"><input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+      <label>New password<span class="pw"><input name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="72" data-pw required>
         <button type="button" class="eye" data-eye aria-label="Show password">👁</button></span></label>
       <label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
       <p class="err" hidden></p>
@@ -92,7 +102,7 @@
     <form id="resetForm" class="auth-form" data-panel="reset" hidden>
       <h2>Choose a new password</h2>
       <p class="mut">8+ characters with letters and numbers.</p>
-      <label>New password<span class="pw"><input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+      <label>New password<span class="pw"><input name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="72" data-pw required>
         <button type="button" class="eye" data-eye aria-label="Show password">👁</button></span></label>
       <label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
       <p class="err" hidden></p>
