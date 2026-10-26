@@ -36,21 +36,27 @@ function getMailtrap() {
   return mailtrap;
 }
 
-async function sendWithMailtrap({ to, subject, text, html }) {
+// Without MAIL_FROM, Mailtrap's demo sender is used. It only delivers to the email of your own Mailtrap account
+// (fine for testing with MAIL_ONLY_TO); for real users, set MAIL_FROM to an address on your verified domain.
+const MAILTRAP_DEMO_FROM = "PalengkeLink <hello@demomailtrap.co>";
+
+async function sendWithMailtrap({ to, subject, text, html, category }) {
   try {
-    await getMailtrap().send({ from: parseAddress(process.env.MAIL_FROM), to: [{ email: to }], subject, text, html, category: "Password reset" });
+    await getMailtrap().send({ from: parseAddress(process.env.MAIL_FROM || MAILTRAP_DEMO_FROM), to: [{ email: to }], subject, text, html, category });
   } catch (e) {
-    throw new Error(`Mailtrap: ${e.message}`);
+    const hint = /unauthori|incorrect api token/i.test(e.message)
+      ? " (MAILTRAP_TOKEN is wrong or was deleted: create a new one in Mailtrap > Settings > API Tokens)" : "";
+    throw new Error(`Mailtrap: ${e.message}${hint}`);
   }
 }
 
-async function sendMail({ to, subject, text, html }) {
+async function sendMail({ to, subject, text, html, category = "PalengkeLink" }) {
   // Testing: MAIL_ONLY_TO sends every email to that one address instead (the subject says who it was for).
   if (process.env.MAIL_ONLY_TO) {
     subject = `[TEST for ${to}] ${subject}`;
     to = process.env.MAIL_ONLY_TO;
   }
-  if (process.env.MAILTRAP_TOKEN) return sendWithMailtrap({ to, subject, text, html });
+  if (process.env.MAILTRAP_TOKEN) return sendWithMailtrap({ to, subject, text, html, category });
   const t = getTransport();
   if (!t) {
     console.log(`\n----- EMAIL (SMTP not configured, so it is shown here) -----\nTo: ${to}\nSubject: ${subject}\n\n${text}\n-----------------------------------------------------------\n`);

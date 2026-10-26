@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "build": "prisma generate",
     "set-password": "node scripts/set-password.js",
+    "two-step-off": "node scripts/two-step-off.js",
     "paymongo-webhook": "node scripts/paymongo-webhook.js"
   },
   "engines": {

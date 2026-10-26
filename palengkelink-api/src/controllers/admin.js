@@ -1,7 +1,8 @@
 // Admin / staff features. Every query runs through asUser(), so PostgreSQL decides what is allowed.
 const bcrypt = require("bcryptjs");
-const { asUser } = require("../db");
+const { prisma, asUser } = require("../db");
 const { HttpError, need, intParam, num } = require("../errors");
+const { setSession } = require("../session");
 const { checkNewPassword } = require("./auth");
 
 const run = (req, work) => asUser(req.user, work);
@@ -52,8 +53,9 @@ exports.updateVendor = async (req, res) => {
 exports.listUsers = async (req, res) =>
   res.json(await run(req, (tx) => tx.$queryRaw`
     SELECT u.user_id, u.username, u.first_name, u.last_name, u.email, u.role, u.status, u.created_at,
-           v.vendor_id, v.business_name, v.contact_number, v.address
-      FROM users u LEFT JOIN vendors v ON v.user_id = u.user_id ORDER BY u.user_id`));
+           v.vendor_id, v.business_name, v.contact_number, v.address, COALESCE(s.two_factor, false) AS two_factor
+      FROM users u LEFT JOIN vendors v ON v.user_id = u.user_id LEFT JOIN account_security s ON s.user_id = u.user_id
+     ORDER BY u.user_id`));
 
 exports.createUser = async (req, res) => {
   const b = req.body;
@@ -73,9 +75,16 @@ exports.updateUser = async (req, res) => {
   if (id === req.user.id && b.status !== "active") throw new HttpError(400, "You cannot deactivate your own account.");
   if (b.password) checkNewPassword(b.password);
   const hash = b.password ? await bcrypt.hash(String(b.password), 10) : null;   // optional password reset (ends that person's sessions)
-  const n = await run(req, (tx) => tx.$executeRaw`UPDATE users SET first_name = ${text(b.first_name)}, last_name = ${text(b.last_name)},
-    email = ${text(b.email)}, status = ${text(b.status)}, password_hash = COALESCE(${hash}, password_hash) WHERE user_id = ${id}`);
-  if (!n) throw new HttpError(404, "User not found.");
+  const version = await run(req, async (tx) => {
+    const n = await tx.$executeRaw`UPDATE users SET first_name = ${text(b.first_name)}, last_name = ${text(b.last_name)},
+      email = ${text(b.email)}, status = ${text(b.status)}, password_hash = COALESCE(${hash}, password_hash) WHERE user_id = ${id}`;
+    if (!n) throw new HttpError(404, "User not found.");
+    return hash && id === req.user.id ? (await tx.$queryRaw`SELECT fn_my_token_version() AS v`)[0].v : null;
+  });
+  // Lost access to their email: the admin turns two-step sign-in off so they can sign in with the password again.
+  if (b.two_factor === "off") await prisma.$executeRaw`SELECT fn_set_two_factor(${id}::int, false, ${req.user.id}::int)`;
+  // An admin who changed their own password here stays signed in on this device (all other sessions end).
+  if (version !== null) setSession(req, res, req.user, version);
   res.json({ ok: true });
 };
 

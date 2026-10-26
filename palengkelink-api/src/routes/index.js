@@ -18,7 +18,16 @@ const onlyVendor = requireRole("vendor");
 const limit = (n) => rateLimit({ windowMs: 15 * 60 * 1000, limit: n, message: { error: "Too many tries. Please wait 15 minutes." } });
 // Every API address: at most 300 requests a minute per IP (a normal page load makes about 5), against scripts hammering the site.
 router.use(rateLimit({ windowMs: 60 * 1000, limit: 300, message: { error: "Too many requests. Please slow down and try again in a minute." } }));
+// Anything that changes data must carry the X-Requested-With header our website sends. Another site cannot add a custom
+// header to a request to us (the browser blocks it without CORS, which we do not allow), so it cannot use the login cookie (CSRF).
+router.use((req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method) || req.get("x-requested-with") === "PalengkeLink") return next();
+  res.status(403).json({ error: "This request did not come from the PalengkeLink website." });
+});
+
 router.post("/auth/login", limit(20), wrap(auth.login));
+router.post("/auth/login/code", limit(10), wrap(auth.loginCode));
+router.post("/auth/logout", wrap(auth.logout));
 router.post("/auth/register", limit(5), wrap(auth.register));
 router.post("/auth/forgot", limit(5), wrap(auth.forgot));
 router.post("/auth/reset", limit(10), wrap(auth.reset));
@@ -30,6 +39,9 @@ router.use(requireLogin);
 router.get("/me", wrap(auth.me));
 router.patch("/me/password", limit(10), wrap(auth.changePassword));
 router.post("/me/logout-everywhere", wrap(auth.logoutEverywhere));
+router.post("/me/two-step/start", limit(5), wrap(auth.twoStepStart));
+router.post("/me/two-step/enable", limit(10), wrap(auth.twoStepEnable));
+router.post("/me/two-step/disable", limit(10), wrap(auth.twoStepDisable));
 router.get("/directory", wrap(profiles.list));
 router.get("/directory/:id", wrap(profiles.profile));
 
