@@ -694,6 +694,7 @@ const actions = {
     el.textContent = "Opening PayMongo…";
     try {
       const { checkoutUrl } = await api("POST", `/my/payments/${id}/checkout`);
+      rememberPayment(id);   // checked when the vendor comes back, however they come back
       location.href = checkoutUrl;
     } catch (ex) {
       toast(ex.message, true);
@@ -964,23 +965,77 @@ function start() {
   $("app").hidden = false;
   showWho();
   if (role() === "vendor") get("/my/profile").then((p) => { session.avatar = p.avatar; showWho(); }).catch(() => {});
-  // Back from PayMongo? Ask the server to confirm the payment with PayMongo, then show the bills.
+  // Back from PayMongo through its own success / cancel link (?paid=1&pid=… or ?paid=0)
   const params = new URLSearchParams(location.search);
   const paid = params.get("paid");
-  if (paid === null) return render();
-  history.replaceState(null, "", location.pathname + location.hash);
-  if (paid !== "1") { toast("Payment cancelled.", true); return render(); }
-  const pid = Number(params.get("pid"));
-  if (!pid || role() !== "vendor") return render();
-  toast("Confirming your payment with PayMongo…");
-  api("POST", `/my/payments/${pid}/confirm`)
-    .then((r) => toast(r.paid ? "Payment received. Salamat!" : "PayMongo has not confirmed the payment yet. Refresh in a minute.", !r.paid))
-    .catch((ex) => toast(ex.message, true))
-    .finally(render);
+  if (paid !== null) {
+    history.replaceState(null, "", location.pathname + location.hash);
+    if (paid !== "1") { store.set(PENDING_PAY, null); toast("Payment cancelled.", true); return render(); }
+    const pid = Number(params.get("pid"));
+    if (pid) rememberPayment(pid);
+  }
+  render();
+  checkPendingPayment();   // also covers Back button, closed tab, paying in the GCash app
 }
+
+// ---------- Coming back from another site (PayMongo) or another tab / app ----------
+// "Pay" remembers which bill went to PayMongo. Whenever the person comes back by ANY road (PayMongo's link, the
+// Back button, switching tabs or apps), the bill is checked with PayMongo, a few times if PayMongo is still busy,
+// and the page reloads its data.
+const PENDING_PAY = "pl_pending_payment";   // "<bill id>:<time Pay was clicked>"
+const PAY_WINDOW = 30 * 60 * 1000;            // a PayMongo checkout page lasts about this long
+let checkingPayment = false, payCheckedOnce = false;
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const rememberPayment = (id) => { store.set(PENDING_PAY, `${id}:${Date.now()}`); payCheckedOnce = false; };
+
+/** The bill waiting for PayMongo, or 0 (forgotten after PAY_WINDOW, so a cancelled payment stops being checked). */
+function pendingPayment() {
+  const [id, at] = String(store.get(PENDING_PAY) || "").split(":").map(Number);
+  if (id && Date.now() - at < PAY_WINDOW) return id;
+  store.set(PENDING_PAY, null);
+  return 0;
+}
+
+async function checkPendingPayment() {
+  const pid = pendingPayment();
+  if (!pid || role() !== "vendor" || checkingPayment) return;
+  checkingPayment = true;
+  // First return: try for about 15 seconds while PayMongo finishes. Later returns: one quiet check.
+  const tries = payCheckedOnce ? 1 : 6;
+  if (!payCheckedOnce) toast("Checking your payment with PayMongo…");
+  try {
+    for (let attempt = 1; attempt <= tries; attempt++) {
+      const r = await api("POST", `/my/payments/${pid}/confirm`).catch((ex) => ({ error: ex.message }));
+      if (r.paid) { store.set(PENDING_PAY, null); toast("Payment received. Salamat!"); return; }
+      if (r.error) { store.set(PENDING_PAY, null); if (!payCheckedOnce) toast(r.error, true); return; }   // e.g. no online payment was started
+      if (attempt < tries) await wait(3000);
+    }
+    // Not paid (yet): maybe PayMongo is slow, or the vendor closed it without paying. The next return checks again.
+    if (!payCheckedOnce) toast("No payment received yet. If you paid, it will show here in a minute.", true);
+  } finally {
+    payCheckedOnce = true;
+    checkingPayment = false;
+    render();
+  }
+}
+
+/** Returning to the page: re-check a payment in progress, else reload the shown data (if away 5+ seconds). */
+let hiddenAt = 0;
+function onReturn(force) {
+  if (!session.user || $("dlg").open) return;   // never wipe a form someone is typing in
+  if (role() === "vendor" && pendingPayment()) return checkPendingPayment();
+  if (force || Date.now() - hiddenAt >= 5000) render();
+}
+// Back button from PayMongo: the browser may show a saved copy of the page (bfcache), so refresh it
+window.addEventListener("pageshow", (e) => e.persisted && onReturn(true));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") hiddenAt = Date.now();
+  else onReturn(false);
+});
 
 function logout(message) {
   if (session.user) api("POST", "/auth/logout").catch(() => {});   // the server removes the login cookie
+  store.set(PENDING_PAY, null);   // the next person on this browser must not inherit a payment check
   session.user = session.avatar = null;
   $("app").hidden = true;
   $("main").innerHTML = "";
