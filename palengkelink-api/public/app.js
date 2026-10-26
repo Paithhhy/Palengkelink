@@ -251,9 +251,12 @@ const suggestionList = (ideas) => {
 const LOG_TABLES = {
   users: "Account", vendors: "Vendor", stalls: "Stall", stall_assignments: "Stall assignment", rental_payments: "Bill",
   vendor_products: "Vendor product", inspections: "Inspection", maintenance_requests: "Maintenance request",
-  supplier_suggestions: "Supplier suggestion",
+  supplier_suggestions: "Supplier suggestion", logins: "Sign-in",
 };
-const LOG_ACTIONS = { INSERT: ["Added", ""], UPDATE: ["Changed", "w"], DELETE: ["Removed", "x"] };
+const LOG_ACTIONS = {
+  INSERT: ["Added", ""], UPDATE: ["Changed", "w"], DELETE: ["Removed", "x"],
+  LOGIN: ["Signed in", ""], LOGIN_FAIL: ["Wrong password", "w"], LOCKED: ["Account locked", "x"], LOGOUT_ALL: ["Logged out everywhere", "w"],
+};
 const when = (d) => new Date(d).toLocaleString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 const activityLog = (log) => {
   const rows = log.map((l) => {
@@ -514,6 +517,10 @@ const views = {
         <div class="acts"><button data-act="changePassword">🔒 Change password</button>
         ${me.vendor_id ? `<a class="btn alt" href="#profile">👤 Edit my public profile</a>` : ""}
         <button class="ghost" data-act="logout">Log out</button></div></div></div>
+      <div class="card"><h3>🛡️ Security</h3>
+        <p class="mut small">Think someone else knows your password, or signed in on a phone you lost? Change your password, or sign out everywhere.
+          After 10 wrong passwords in a row, an account is locked for 15 minutes.</p>
+        <div class="acts"><button class="danger" data-act="logoutEverywhere">Log out of all devices</button></div></div>
       <p class="mut small">Forgot your password some day? Use “Forgot password?” on the sign-in page. A verification code is sent to ${esc(me.email)}.</p>
       ${log ? activityLog(log) : ""}`;
   },
@@ -553,7 +560,7 @@ const actions = {
   // Vendors
   addVendor: () => openForm({
     title: "Register vendor", submit: "Register", done: "Vendor registered",
-    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, hint: "At least 8 characters" },
+    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, hint: "8+ characters with letters and numbers" },
       ...vendorFields],
     onSubmit: (d) => api("POST", "/vendors", d),
   }),
@@ -785,7 +792,7 @@ const actions = {
   // Accounts (admin)
   addUser: () => openForm({
     title: "Add admin / inspector account", submit: "Create", done: "Account created",
-    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, hint: "At least 8 characters" },
+    fields: [{ name: "username", label: "Username" }, { name: "password", label: "Password", type: "password", minlength: 8, hint: "8+ characters with letters and numbers" },
       { name: "first_name", label: "First name" }, { name: "last_name", label: "Last name" }, { name: "email", label: "Email", type: "email" },
       { name: "role", label: "Role", type: "select", options: [["staff", ROLE_NAMES.staff], ["admin", ROLE_NAMES.admin]] }],
     onSubmit: (d) => api("POST", "/users", d),
@@ -796,7 +803,7 @@ const actions = {
       title: `Edit account @${u.username}`, values: u,
       fields: [{ name: "first_name", label: "First name" }, { name: "last_name", label: "Last name" }, { name: "email", label: "Email", type: "email" },
         { name: "status", label: "Status", type: "select", options: opts(["active", "inactive", "pending"]), hint: "Only active accounts can sign in." },
-        { name: "password", label: "New password", type: "password", minlength: 8, required: false, hint: "Leave empty to keep the current password" }],
+        { name: "password", label: "New password", type: "password", minlength: 8, required: false, hint: "Leave empty to keep it. 8+ characters with letters and numbers. Signs them out everywhere." }],
       onSubmit: (d) => api("PATCH", `/users/${id}`, d),
     });
   },
@@ -805,13 +812,21 @@ const actions = {
   changePassword: () => openForm({
     title: "Change password", submit: "Change password", done: "Password changed",
     fields: [{ name: "current_password", label: "Current password", type: "password" },
-      { name: "new_password", label: "New password", type: "password", minlength: 8, hint: "At least 8 characters" },
+      { name: "new_password", label: "New password", type: "password", minlength: 8, hint: "8+ characters with letters and numbers" },
       { name: "confirm", label: "Type the new password again", type: "password" }],
-    onSubmit: (d) => {
+    onSubmit: async (d) => {
       if (d.new_password !== d.confirm) throw new Error("The new passwords do not match.");
-      return api("PATCH", "/me/password", d);
+      // Other devices are signed out; this one gets a fresh token.
+      const r = await api("PATCH", "/me/password", d);
+      session.token = r.token;
+      store.set("pl_token", r.token);
+      return "Password changed. Your other devices were signed out.";
     },
   }),
+  logoutEverywhere: async () => {
+    if (!confirm("Sign out on every phone and computer, including this one?")) return;
+    try { await api("POST", "/me/logout-everywhere"); logout("You were signed out on all devices."); } catch (ex) { toast(ex.message, true); }
+  },
 };
 
 // Inline status dropdowns
