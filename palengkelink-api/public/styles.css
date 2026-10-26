@@ -374,3 +374,16 @@ dialog::backdrop{background:#06140bb3;backdrop-filter:blur(2px)}
 .sec-row>div{display:grid;gap:3px;min-width:0}
 .sec-row button{flex-shrink:0}
 @media(max-width:700px){.sec-row{flex-direction:column;align-items:stretch}}
+
+/* ---------- Picture crop window ---------- */
+.crop{padding:20px;display:grid;gap:12px}
+.crop .small{margin:-4px 0 0}
+.crop-view{position:relative;width:100%;overflow:hidden;border-radius:12px;background:#0b130e;cursor:grab;touch-action:none;user-select:none;outline-offset:3px}
+.crop-view.dragging{cursor:grabbing}
+.crop-view img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;pointer-events:none;user-select:none}
+/* the frame: a thin outline, plus a dark veil outside the circle for profile pictures */
+.crop-view::after{content:"";position:absolute;inset:0;border:2px solid #ffffffcc;border-radius:12px;pointer-events:none}
+.crop-view.round::after{border-radius:50%;box-shadow:0 0 0 999px #000000a0}
+.crop-view.round{width:min(100%,360px);justify-self:center}
+.crop-zoom{display:flex;flex-direction:row;align-items:center;gap:10px;font-size:18px;font-weight:700;color:var(--mut)}
+.crop-zoom input{flex:1;accent-color:var(--pri)}

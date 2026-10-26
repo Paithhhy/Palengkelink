@@ -144,32 +144,130 @@ document.addEventListener("input", (e) => {
 document.addEventListener("focusin", (e) => e.target.matches?.("[data-pw]") && updatePwChecklist(e.target));
 
 // ---------- Pictures: crop + shrink in the browser before saving ----------
-/** Only PNG and JPEG pictures. The file picker already filters, but "All files" or drag and drop can get past it. */
-const PICTURE_TYPES = ["image/png", "image/jpeg"];
-const isPngOrJpeg = (file) => PICTURE_TYPES.includes(file.type) || (!file.type && /\.(png|jpe?g)$/i.test(file.name));
+// Only PNG and JPEG. The file's first bytes decide, not its name or the type Windows reports
+// (Windows sometimes calls a .jpg "image/pjpeg").
+const isPng = (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+const isJpeg = (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+const MAX_PICTURE_MB = 15;
 
-function resizeImage(file, w, h, maxLength) {
-  if (!isPngOrJpeg(file)) return Promise.reject(new Error("Please choose a PNG or JPEG picture (.png, .jpg or .jpeg)."));
+/** Check the file and open it as an <img>. Read as a data: URL, which the Content-Security-Policy allows (blob: URLs are not). */
+async function loadPicture(file) {
+  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  if (!isPng(head) && !isJpeg(head)) throw new Error("Please choose a PNG or JPEG picture (.png, .jpg or .jpeg).");
+  if (file.size > MAX_PICTURE_MB * 1024 * 1024) throw new Error(`That picture is over ${MAX_PICTURE_MB} MB. Please choose a smaller one.`);
+  const url = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("That file could not be read."));
+    reader.readAsDataURL(file);
+  });
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(img.src);
-      const canvas = document.createElement("canvas");
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      const scale = Math.max(w / img.width, h / img.height);
-      const sw = w / scale, sh = h / scale;
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, 0, 0, w, h);
-      for (let q = 0.85; q > 0.3; q -= 0.1) {
-        const url = canvas.toDataURL("image/jpeg", q);
-        if (url.length <= maxLength) return resolve(url);
-      }
-      reject(new Error("That picture is too large."));
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("That picture could not be opened. It may be damaged."));
+    img.src = url;
+  });
+}
+
+/** The cropped area as a JPEG data URL of w x h, shrunk until it fits maxLength characters. */
+function exportCrop(img, crop, w, h, maxLength) {
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";   // a PNG's see-through parts become white
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, w, h);
+  for (let q = 0.85; q > 0.3; q -= 0.1) {
+    const url = canvas.toDataURL("image/jpeg", q);
+    if (url.length <= maxLength) return url;
+  }
+  throw new Error("That picture is too large.");
+}
+
+/**
+ * Crop window: the picture behind a frame of the final shape (circle for the profile picture, 3:1 for the cover).
+ * Drag to move; slider, mouse wheel, pinch or +/- to zoom; arrow keys move. Resolves the JPEG data URL, or null on Cancel.
+ */
+function cropPicture(img, w, h, maxLength, round) {
+  return new Promise((resolve) => {
+    let dlg = $("cropDlg");
+    if (!dlg) { dlg = document.createElement("dialog"); dlg.id = "cropDlg"; document.body.append(dlg); }
+    dlg.innerHTML = `<div class="crop"><div class="dlg-head"><h3>${round ? "Crop profile picture" : "Crop cover photo"}</h3>
+        <button type="button" class="icon-btn" data-crop="cancel" title="Cancel">✕</button></div>
+      <p class="mut small">Drag the picture to move it. Zoom with the slider, the mouse wheel or two fingers.</p>
+      <div class="crop-view ${round ? "round" : ""}" tabindex="0" aria-label="Picture to crop. Arrow keys move it, plus and minus zoom."><img alt=""></div>
+      <label class="crop-zoom"><span>－</span><input type="range" min="1" max="4" step="0.01" value="1" aria-label="Zoom"><span>＋</span></label>
+      <p class="err" hidden></p>
+      <div class="dlg-actions"><button type="button" class="ghost" data-crop="cancel">Cancel</button><button type="button" data-crop="ok">Use picture</button></div></div>`;
+    const view = dlg.querySelector(".crop-view"), pic = view.querySelector("img"), slider = dlg.querySelector("input"), err = dlg.querySelector(".err");
+    pic.src = img.src;
+    dlg.showModal();
+
+    // Frame size on screen; the picture is placed with a translate + scale (origin top-left)
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    const vw = view.clientWidth, vh = Math.round(vw * h / w);
+    view.style.height = vh + "px";
+    pic.style.width = iw + "px";
+    const fit = Math.max(vw / iw, vh / ih);   // smallest scale that still fills the frame
+    let zoom = 1, s = fit, x = (vw - iw * s) / 2, y = (vh - ih * s) / 2;
+    const draw = () => {
+      x = Math.min(0, Math.max(vw - iw * s, x));   // the picture always covers the whole frame
+      y = Math.min(0, Math.max(vh - ih * s, y));
+      pic.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
+      slider.value = zoom;
     };
-    img.onerror = () => reject(new Error("That file is not a picture."));
-    img.src = URL.createObjectURL(file);
+    const setZoom = (z, cx = vw / 2, cy = vh / 2) => {   // zoom around a point, keeping it under the finger / cursor
+      zoom = Math.min(4, Math.max(1, z));
+      const px = (cx - x) / s, py = (cy - y) / s;
+      s = fit * zoom;
+      x = cx - px * s; y = cy - py * s;
+      draw();
+    };
+    draw();
+
+    // Drag with mouse or one finger, pinch with two
+    const pointers = new Map();
+    let pinch = null;
+    view.onpointerdown = (e) => { view.setPointerCapture(e.pointerId); pointers.set(e.pointerId, { x: e.clientX, y: e.clientY }); view.classList.add("dragging"); };
+    view.onpointermove = (e) => {
+      const last = pointers.get(e.pointerId);
+      if (!last) return;
+      const now = { x: e.clientX, y: e.clientY };
+      pointers.set(e.pointerId, now);
+      if (pointers.size === 1) { x += now.x - last.x; y += now.y - last.y; draw(); return; }
+      const [a, b] = [...pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y), rect = view.getBoundingClientRect();
+      if (pinch) setZoom(zoom * dist / pinch, (a.x + b.x) / 2 - rect.left, (a.y + b.y) / 2 - rect.top);
+      pinch = dist;
+    };
+    view.onpointerup = view.onpointercancel = (e) => {
+      pointers.delete(e.pointerId);
+      pinch = null;
+      if (!pointers.size) view.classList.remove("dragging");
+    };
+    view.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = view.getBoundingClientRect();
+      setZoom(zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX - rect.left, e.clientY - rect.top);
+    }, { passive: false });
+    slider.oninput = () => setZoom(Number(slider.value));
+    view.onkeydown = (e) => {
+      const step = { ArrowLeft: [10, 0], ArrowRight: [-10, 0], ArrowUp: [0, 10], ArrowDown: [0, -10] }[e.key];
+      if (step) { e.preventDefault(); x += step[0]; y += step[1]; draw(); }
+      else if (e.key === "+" || e.key === "=") setZoom(zoom * 1.1);
+      else if (e.key === "-") setZoom(zoom / 1.1);
+    };
+
+    const finish = (result) => { dlg.onclose = null; dlg.close(); resolve(result); };
+    dlg.onclose = () => resolve(null);   // Esc key
+    dlg.onclick = (e) => {
+      const act = e.target.closest("[data-crop]")?.dataset.crop;
+      if (act === "cancel") return finish(null);
+      if (act !== "ok") return;
+      try {   // the frame, mapped back onto the original picture
+        finish(exportCrop(img, { sx: -x / s, sy: -y / s, sw: vw / s, sh: vh / s }, w, h, maxLength));
+      } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+    };
   });
 }
 
@@ -183,7 +281,8 @@ function fieldHtml(f, values) {
     return `<div class="lbl wide">${esc(f.label)}<div class="imgpick ${f.round ? "round" : ""}">
       <img ${val ? `src="${esc(val)}"` : "hidden"} alt=""><input type="hidden" name="${f.name}" value="${esc(val)}">
       <input type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" data-w="${f.w}" data-h="${f.h}" data-max="${f.max}">
-      <button type="button" class="sm ghost" data-clear>Remove</button></div><small>PNG or JPEG only</small></div>`;
+      <button type="button" class="sm alt" data-recrop hidden>✂ Crop again</button>
+      <button type="button" class="sm ghost" data-clear>Remove</button></div><small>PNG or JPEG only. You can crop it after choosing.</small></div>`;
   }
   let control;
   if (f.type === "select") {
@@ -209,22 +308,38 @@ function openForm({ title, fields, values = {}, submit = "Save", done = "Saved",
   const form = dlg.querySelector("form");
   const err = form.querySelector(".err");
   form.oninput = (e) => onInput && onInput(form, e);
+  // Picture fields: check the file, let the person crop it, then show and keep the cropped JPEG
+  const cropInto = async (box, img) => {
+    const input = box.querySelector("input[type=file]");
+    const url = await cropPicture(img, +input.dataset.w, +input.dataset.h, +input.dataset.max, box.classList.contains("round"));
+    if (!url) return false;   // Cancel: the old picture stays
+    box.querySelector("input[type=hidden]").value = url;
+    Object.assign(box.querySelector("img"), { src: url, hidden: false });
+    box.picture = img;   // kept for "Crop again"
+    box.querySelector("[data-recrop]").hidden = false;
+    return true;
+  };
   form.onchange = async (e) => {
     const file = e.target.type === "file" && e.target.files[0];
     if (!file) return;
     const box = e.target.closest(".imgpick");
     try {
-      const url = await resizeImage(file, +e.target.dataset.w, +e.target.dataset.h, +e.target.dataset.max);
-      box.querySelector("input[type=hidden]").value = url;
-      Object.assign(box.querySelector("img"), { src: url, hidden: false });
       err.hidden = true;
+      if (!(await cropInto(box, await loadPicture(file)))) e.target.value = "";
     } catch (ex) { err.textContent = ex.message; err.hidden = false; e.target.value = ""; }   // drop the refused file
   };
   form.onclick = (e) => {
     if (e.target.closest("[data-close]")) dlg.close();
+    const recrop = e.target.closest("[data-recrop]");
+    if (recrop) {
+      const box = recrop.closest(".imgpick");
+      if (box.picture) cropInto(box, box.picture);
+    }
     const clear = e.target.closest("[data-clear]");
     if (clear) {
       const box = clear.closest(".imgpick");
+      box.picture = null;
+      box.querySelector("[data-recrop]").hidden = true;
       box.querySelector("input[type=hidden]").value = "";
       box.querySelector("input[type=file]").value = "";
       box.querySelector("img").hidden = true;
