@@ -144,7 +144,12 @@ document.addEventListener("input", (e) => {
 document.addEventListener("focusin", (e) => e.target.matches?.("[data-pw]") && updatePwChecklist(e.target));
 
 // ---------- Pictures: crop + shrink in the browser before saving ----------
+/** Only PNG and JPEG pictures. The file picker already filters, but "All files" or drag and drop can get past it. */
+const PICTURE_TYPES = ["image/png", "image/jpeg"];
+const isPngOrJpeg = (file) => PICTURE_TYPES.includes(file.type) || (!file.type && /\.(png|jpe?g)$/i.test(file.name));
+
 function resizeImage(file, w, h, maxLength) {
+  if (!isPngOrJpeg(file)) return Promise.reject(new Error("Please choose a PNG or JPEG picture (.png, .jpg or .jpeg)."));
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -177,8 +182,8 @@ function fieldHtml(f, values) {
   if (f.type === "image") {
     return `<div class="lbl wide">${esc(f.label)}<div class="imgpick ${f.round ? "round" : ""}">
       <img ${val ? `src="${esc(val)}"` : "hidden"} alt=""><input type="hidden" name="${f.name}" value="${esc(val)}">
-      <input type="file" accept="image/*" data-w="${f.w}" data-h="${f.h}" data-max="${f.max}">
-      <button type="button" class="sm ghost" data-clear>Remove</button></div></div>`;
+      <input type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" data-w="${f.w}" data-h="${f.h}" data-max="${f.max}">
+      <button type="button" class="sm ghost" data-clear>Remove</button></div><small>PNG or JPEG only</small></div>`;
   }
   let control;
   if (f.type === "select") {
@@ -213,7 +218,7 @@ function openForm({ title, fields, values = {}, submit = "Save", done = "Saved",
       box.querySelector("input[type=hidden]").value = url;
       Object.assign(box.querySelector("img"), { src: url, hidden: false });
       err.hidden = true;
-    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; e.target.value = ""; }   // drop the refused file
   };
   form.onclick = (e) => {
     if (e.target.closest("[data-close]")) dlg.close();
