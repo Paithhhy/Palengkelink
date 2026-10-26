@@ -2,6 +2,7 @@
 const bcrypt = require("bcryptjs");
 const { asUser } = require("../db");
 const { HttpError, need, intParam, num } = require("../errors");
+const { checkNewPassword } = require("./auth");
 
 const run = (req, work) => asUser(req.user, work);
 const text = (v) => (v === undefined || v === null ? null : String(v).trim());
@@ -20,6 +21,7 @@ exports.listVendors = async (req, res) =>
 exports.createVendor = async (req, res) => {
   const b = req.body;
   need(b, ["username", "password", "first_name", "last_name", "email", "business_name", "contact_number", "address"]);
+  checkNewPassword(b.password, b.username);
   const hash = await bcrypt.hash(String(b.password), 10);
   // Two inserts in ONE transaction: either both are saved or neither.
   const vendor = await run(req, async (tx) => {
@@ -57,6 +59,7 @@ exports.createUser = async (req, res) => {
   const b = req.body;
   need(b, ["username", "password", "first_name", "last_name", "email", "role"]);
   if (!["admin", "staff"].includes(b.role)) throw new HttpError(400, "Role must be admin or staff (add vendors on the Vendors page).");
+  checkNewPassword(b.password, b.username);
   const hash = await bcrypt.hash(String(b.password), 10);
   const [row] = await run(req, (tx) => tx.$queryRaw`INSERT INTO users (username, password_hash, first_name, last_name, email, role)
     VALUES (${text(b.username)}, ${hash}, ${text(b.first_name)}, ${text(b.last_name)}, ${text(b.email)}, ${b.role}) RETURNING user_id`);
@@ -68,7 +71,8 @@ exports.updateUser = async (req, res) => {
   need(b, ["first_name", "last_name", "email", "status"]);
   const id = intParam(req.params.id);
   if (id === req.user.id && b.status !== "active") throw new HttpError(400, "You cannot deactivate your own account.");
-  const hash = b.password ? await bcrypt.hash(String(b.password), 10) : null;   // optional password reset
+  if (b.password) checkNewPassword(b.password);
+  const hash = b.password ? await bcrypt.hash(String(b.password), 10) : null;   // optional password reset (ends that person's sessions)
   const n = await run(req, (tx) => tx.$executeRaw`UPDATE users SET first_name = ${text(b.first_name)}, last_name = ${text(b.last_name)},
     email = ${text(b.email)}, status = ${text(b.status)}, password_hash = COALESCE(${hash}, password_hash) WHERE user_id = ${id}`);
   if (!n) throw new HttpError(404, "User not found.");

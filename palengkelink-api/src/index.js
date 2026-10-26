@@ -7,12 +7,37 @@ const payments = require("./controllers/payments");
 const routes = require("./routes");
 
 if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET is not set (see .env.example)");
+if (process.env.JWT_SECRET.length < 32) {
+  console.warn("WARNING: JWT_SECRET is short. Anyone who guesses it can sign in as anybody. Use 32+ random characters, e.g. the output of:\n  node -e \"console.log(require('crypto').randomBytes(48).toString('base64url'))\"");
+}
 
 BigInt.prototype.toJSON = function () { return Number(this); };   // lets JSON send database bigint values
 
 const app = express();
 app.set("trust proxy", 1);   // behind Vercel's proxy: use the real visitor IP (the login rate limit depends on it)
-app.use(helmet({ contentSecurityPolicy: false }));
+// Security headers. The Content-Security-Policy tells the browser to run only our own app.js (no injected scripts,
+// no inline scripts), to load fonts only from Google Fonts, and to refuse being shown inside another site's frame.
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: false,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      scriptSrcAttr: ["'none'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],   // inline style="" is used for colours/pictures
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:"],                                              // profile pictures are stored as data: URLs
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"],
+      ...(process.env.VERCEL ? { upgradeInsecureRequests: [] } : {}),
+    },
+  },
+}));
+// Private data (bills, accounts, activity log) must never be kept in a shared or browser cache.
+app.use("/api", (req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
 // PayMongo webhook FIRST: it needs the raw body to check the signature (before express.json touches it).
 app.post("/api/webhooks/paymongo", express.raw({ type: "*/*" }), wrap(payments.webhook));

@@ -1,15 +1,30 @@
 const jwt = require("jsonwebtoken");
+const { prisma } = require("../db");
 const { HttpError } = require("../errors");
 
-/** Reads "Authorization: Bearer <token>" and puts { id, role } on req.user. */
-function requireLogin(req, res, next) {
+/**
+ * Reads "Authorization: Bearer <token>" and puts { id, role } on req.user.
+ * Besides the signature, every request asks the database (fn_session_check) whether the account is still active and
+ * whether the token's version is current. So a stolen token stops working as soon as the password changes, the person
+ * uses "Log out of all devices", or the admin disables the account. The role also comes from the database, not the token.
+ */
+async function requireLogin(req, res, next) {
   const token = (req.headers.authorization || "").replace(/^Bearer /, "");
+  let payload;
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = { id: payload.id, role: payload.role };
-    next();
+    payload = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ["HS256"] });
   } catch {
-    next(new HttpError(401, "Please log in."));
+    return next(new HttpError(401, "Please log in."));
+  }
+  try {
+    const [s] = await prisma.$queryRaw`SELECT * FROM fn_session_check(${Number(payload.id)}::int)`;
+    if (!s || s.status !== "active" || s.token_version !== Number(payload.v ?? 0)) {
+      return next(new HttpError(401, "Your session has ended. Please sign in again."));
+    }
+    req.user = { id: payload.id, role: s.role };
+    next();
+  } catch (e) {
+    next(e);
   }
 }
 
