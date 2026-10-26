@@ -16,6 +16,8 @@ const onlyVendor = requireRole("vendor");
 
 // Public (rate-limited: each IP gets a few tries per 15 minutes)
 const limit = (n) => rateLimit({ windowMs: 15 * 60 * 1000, limit: n, message: { error: "Too many tries. Please wait 15 minutes." } });
+// Every API address: at most 300 requests a minute per IP (a normal page load makes about 5), against scripts hammering the site.
+router.use(rateLimit({ windowMs: 60 * 1000, limit: 300, message: { error: "Too many requests. Please slow down and try again in a minute." } }));
 router.post("/auth/login", limit(20), wrap(auth.login));
 router.post("/auth/register", limit(5), wrap(auth.register));
 router.post("/auth/forgot", limit(5), wrap(auth.forgot));
@@ -26,7 +28,8 @@ router.use(requireLogin);
 
 // Everyone: own account + vendor profiles
 router.get("/me", wrap(auth.me));
-router.patch("/me/password", wrap(auth.changePassword));
+router.patch("/me/password", limit(10), wrap(auth.changePassword));
+router.post("/me/logout-everywhere", wrap(auth.logoutEverywhere));
 router.get("/directory", wrap(profiles.list));
 router.get("/directory/:id", wrap(profiles.profile));
 
