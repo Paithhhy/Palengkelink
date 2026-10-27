@@ -4,10 +4,37 @@ const { prisma, asUser } = require("../db");
 const { HttpError, need, intParam, num } = require("../errors");
 const { setSession } = require("../session");
 const { checkNewPassword, checkUsername, checkEmail } = require("./auth");
+const { checkName, checkText, checkPhone, checkStallNumber } = require("../validate");
 
 const run = (req, work) => asUser(req.user, work);
 const text = (v) => (v === undefined || v === null ? null : String(v).trim());
 const email = (v) => String(v ?? "").trim().toLowerCase();   // stored in lower case, like self-registration does
+
+// No random keyboard text in names, categories, units, addresses or remarks (src/validate.js).
+// Each helper checks the fields in place and keeps the cleaned values on the body.
+const cleanPerson = (b) => {
+  b.first_name = checkName(b.first_name, "First name", { max: 80, person: true });
+  b.last_name = checkName(b.last_name, "Last name", { max: 80, person: true });
+};
+const cleanBusiness = (b) => {
+  b.business_name = checkName(b.business_name, "Business name");
+  b.contact_number = checkPhone(b.contact_number);
+  b.address = checkName(b.address, "Address", { max: 255 });
+};
+const cleanProduct = (b) => {
+  b.product_name = checkName(b.product_name, "Product name");
+  b.category = checkName(b.category, "Category", { max: 80 });
+  b.unit = checkName(b.unit, "Unit", { max: 30 });
+};
+const cleanSupplier = (b) => {
+  b.supplier_name = checkName(b.supplier_name, "Supplier name");
+  b.contact_number = checkPhone(b.contact_number);
+  b.address = checkName(b.address, "Address", { max: 255 });
+};
+const cleanInspection = (b) => {
+  b.inspection_type = checkName(b.inspection_type, "Inspection type", { max: 80 });
+  b.remarks = checkText(b.remarks, "Remarks", { required: false });
+};
 
 /** Same rule as self-registration (fn_register_vendor / fn_register_staff): usernames and emails are unique
  *  ignoring capital letters, so "Ramos" cannot be added next to "ramos". exceptId = the account being edited. */
@@ -34,6 +61,8 @@ exports.listVendors = async (req, res) =>
 exports.createVendor = async (req, res) => {
   const b = req.body;
   need(b, ["username", "password", "first_name", "last_name", "email", "business_name", "contact_number", "address"]);
+  cleanPerson(b);
+  cleanBusiness(b);
   checkUsername(b.username);
   checkEmail(b.email);
   checkNewPassword(b.password, b.username);
@@ -54,6 +83,8 @@ exports.updateVendor = async (req, res) => {
   const b = req.body;
   need(b, ["business_name", "contact_number", "address", "status", "first_name", "last_name", "email"]);
   const id = intParam(req.params.id);
+  cleanPerson(b);
+  cleanBusiness(b);
   checkEmail(b.email);
   await run(req, async (tx) => {
     const [v] = await tx.$queryRaw`SELECT user_id FROM vendors WHERE vendor_id = ${id}`;
@@ -79,6 +110,7 @@ exports.createUser = async (req, res) => {
   const b = req.body;
   need(b, ["username", "password", "first_name", "last_name", "email", "role"]);
   if (!["admin", "staff"].includes(b.role)) throw new HttpError(400, "Role must be admin or staff (add vendors on the Vendors page).");
+  cleanPerson(b);
   checkUsername(b.username);
   checkEmail(b.email);
   checkNewPassword(b.password, b.username);
@@ -96,6 +128,7 @@ exports.updateUser = async (req, res) => {
   need(b, ["first_name", "last_name", "email", "status"]);
   const id = intParam(req.params.id);
   if (id === req.user.id && b.status !== "active") throw new HttpError(400, "You cannot deactivate your own account.");
+  cleanPerson(b);
   checkEmail(b.email);
   if (b.password) checkNewPassword(b.password);
   const hash = b.password ? await bcrypt.hash(String(b.password), 10) : null;   // optional password reset (ends that person's sessions)
@@ -135,6 +168,8 @@ exports.listStalls = async (req, res) =>
 exports.createStall = async (req, res) => {
   const b = req.body;
   need(b, ["stall_number", "section", "monthly_rent"]);
+  b.stall_number = checkStallNumber(b.stall_number);
+  b.section = checkName(b.section, "Section", { max: 80 });
   const [row] = await run(req, (tx) => tx.$queryRaw`INSERT INTO stalls (stall_number, section, monthly_rent)
     VALUES (${text(b.stall_number)}, ${text(b.section)}, ${num(b.monthly_rent, "monthly_rent")}::numeric) RETURNING stall_id`);
   res.status(201).json(row);
@@ -146,6 +181,8 @@ exports.updateStall = async (req, res) => {
   const b = req.body;
   const id = intParam(req.params.id);
   need(b, ["section", "status"]);
+  b.section = checkName(b.section, "Section", { max: 80 });
+  if (req.user.role === "admin" && b.stall_number != null) b.stall_number = checkStallNumber(b.stall_number);
   const maintenance = b.status === "maintenance";
   await run(req, async (tx) => {
     if (req.user.role === "admin") {
@@ -192,6 +229,7 @@ exports.listVendorProducts = async (req, res) =>
 
 exports.createProduct = async (req, res) => {
   need(req.body, ["product_name", "category", "unit"]);
+  cleanProduct(req.body);
   const [row] = await run(req, (tx) => tx.$queryRaw`INSERT INTO products (product_name, category, unit)
     VALUES (${text(req.body.product_name)}, ${text(req.body.category)}, ${text(req.body.unit)}) RETURNING product_id`);
   res.status(201).json(row);
@@ -199,6 +237,7 @@ exports.createProduct = async (req, res) => {
 
 exports.updateProduct = async (req, res) => {
   need(req.body, ["product_name", "category", "unit"]);
+  cleanProduct(req.body);
   const n = await run(req, (tx) => tx.$executeRaw`UPDATE products SET product_name = ${text(req.body.product_name)},
     category = ${text(req.body.category)}, unit = ${text(req.body.unit)} WHERE product_id = ${intParam(req.params.id)}`);
   if (!n) throw new HttpError(404, "Product not found.");
@@ -212,6 +251,7 @@ exports.listSuppliers = async (req, res) =>
 
 exports.createSupplier = async (req, res) => {
   need(req.body, ["supplier_name", "contact_number", "address"]);
+  cleanSupplier(req.body);
   const [row] = await run(req, (tx) => tx.$queryRaw`INSERT INTO suppliers (supplier_name, contact_number, address)
     VALUES (${text(req.body.supplier_name)}, ${text(req.body.contact_number)}, ${text(req.body.address)}) RETURNING supplier_id`);
   res.status(201).json(row);
@@ -220,6 +260,7 @@ exports.createSupplier = async (req, res) => {
 exports.updateSupplier = async (req, res) => {
   const b = req.body;
   need(b, ["supplier_name", "contact_number", "address", "status"]);
+  cleanSupplier(b);
   const n = await run(req, (tx) => tx.$executeRaw`UPDATE suppliers SET supplier_name = ${text(b.supplier_name)},
     contact_number = ${text(b.contact_number)}, address = ${text(b.address)}, status = ${text(b.status)}
     WHERE supplier_id = ${intParam(req.params.id)}`);
@@ -242,10 +283,12 @@ exports.reviewSuggestion = async (req, res) => {
   const id = intParam(req.params.id);
   need(b, ["status"]);
   if (!["approved", "declined"].includes(b.status)) throw new HttpError(400, "Status must be approved or declined.");
+  b.admin_note = checkText(b.admin_note, "Note", { max: 500, required: false });
   await run(req, async (tx) => {
     let supplierId = null;
     if (b.status === "approved") {
       need(b, ["supplier_name", "contact_number", "address"]);
+      cleanSupplier(b);
       [{ supplier_id: supplierId }] = await tx.$queryRaw`INSERT INTO suppliers (supplier_name, contact_number, address)
         VALUES (${text(b.supplier_name)}, ${text(b.contact_number)}, ${text(b.address)}) RETURNING supplier_id`;
     }
@@ -262,6 +305,7 @@ exports.listInspections = async (req, res) =>
 
 exports.createInspection = async (req, res) => {
   need(req.body, ["stall_id", "inspection_type", "result"]);
+  cleanInspection(req.body);
   const [row] = await run(req, (tx) => tx.$queryRaw`INSERT INTO inspections (stall_id, inspector_id, inspection_type, result, remarks)
     VALUES (${intParam(req.body.stall_id)}, ${req.user.id}, ${text(req.body.inspection_type)}, ${text(req.body.result)}, ${text(req.body.remarks) || null})
     RETURNING inspection_id`);
@@ -270,6 +314,7 @@ exports.createInspection = async (req, res) => {
 
 exports.updateInspection = async (req, res) => {
   need(req.body, ["inspection_type", "result"]);
+  cleanInspection(req.body);
   const n = await run(req, (tx) => tx.$executeRaw`UPDATE inspections SET inspection_type = ${text(req.body.inspection_type)},
     result = ${text(req.body.result)}, remarks = ${text(req.body.remarks) || null} WHERE inspection_id = ${intParam(req.params.id)}`);
   if (!n) throw new HttpError(404, "Inspection not found.");

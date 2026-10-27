@@ -4,6 +4,7 @@ const { prisma, asUser } = require("../db");
 const { setSession, clearSession } = require("../session");
 const { HttpError, need } = require("../errors");
 const { sendMail } = require("../mailer");
+const { checkName, checkPhone } = require("../validate");
 
 /** Who is logged in: { user_id, username, first_name, last_name, email, role, vendor_id } */
 const me = async (user) => (await asUser(user, (tx) => tx.$queryRaw`SELECT * FROM fn_me()`))[0];
@@ -152,6 +153,14 @@ exports.register = async (req, res) => {
   if (!["vendor", "staff"].includes(role)) throw new HttpError(400, "You can only register as a vendor or an inspector.");
   need(b, ["username", "password", "first_name", "last_name", "email",
     ...(role === "vendor" ? ["business_name", "contact_number", "address"] : [])]);
+  // No random keyboard text in names and addresses (src/validate.js)
+  b.first_name = checkName(b.first_name, "First name", { max: 80, person: true });
+  b.last_name = checkName(b.last_name, "Last name", { max: 80, person: true });
+  if (role === "vendor") {
+    b.business_name = checkName(b.business_name, "Business name");
+    b.contact_number = checkPhone(b.contact_number, "Mobile number");
+    b.address = checkName(b.address, "Address", { max: 255 });
+  }
   checkUsername(b.username);
   checkEmail(b.email);
   checkNewPassword(b.password, b.username);

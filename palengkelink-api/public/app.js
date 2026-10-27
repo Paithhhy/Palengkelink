@@ -706,6 +706,15 @@ const find = (list, key, id) => (cache[list] || []).find((x) => x[key] === id);
 const vendorOptions = () => (cache.vendors || []).filter((v) => v.status === "active" && v.account_status === "active").map((v) => [v.vendor_id, v.business_name]);
 const INSPECTION_TYPES = ["Sanitation", "Compliance", "Safety", "Fire safety", "Structural"];
 const withCurrent = (list, value) => (value && !list.includes(value) ? [...list, value] : list);
+// Categories and units are picked from fixed lists, so they cannot be random text
+const CATEGORIES = ["Vegetables", "Fruits", "Meat", "Poultry", "Fish & Seafood", "Rice & Grains", "Eggs", "Dry Goods",
+  "Spices & Condiments", "Canned Goods", "Snacks", "Beverages", "Dairy", "Frozen Goods", "Bakery", "Household Items", "Others"];
+const UNITS = ["kg", "g", "pc", "pack", "bundle", "dozen", "tray", "liter", "ml", "bottle", "can", "sack", "box"];
+/** Category + unit dropdowns; an older value not in the lists stays selectable on edit, so nothing is lost. */
+const productFields = (current = {}) => [
+  { name: "category", label: "Category", type: "select", options: [["", "— Choose —"], ...withCurrent(CATEGORIES, current.category).map((c) => [c, c])] },
+  { name: "unit", label: "Unit", type: "select", options: [["", "— Choose —"], ...withCurrent(UNITS, current.unit).map((u) => [u, u])] },
+];
 
 const vendorFields = [
   { name: "business_name", label: "Business name" }, { name: "first_name", label: "Owner first name" },
@@ -825,14 +834,17 @@ const actions = {
   // Products (admin)
   addProduct: () => openForm({
     title: "Add product to catalog", submit: "Add", done: "Product added",
-    fields: [{ name: "product_name", label: "Product name" }, { name: "category", label: "Category" }, { name: "unit", label: "Unit (kg, bundle, pc…)" }],
+    fields: [{ name: "product_name", label: "Product name", hint: "A real product name, e.g. Kangkong or Pork belly" }, ...productFields()],
     onSubmit: (d) => api("POST", "/products", d),
   }),
-  editProduct: (id) => openForm({
-    title: "Edit product", values: find("catalog", "product_id", id),
-    fields: [{ name: "product_name", label: "Product name" }, { name: "category", label: "Category" }, { name: "unit", label: "Unit" }],
-    onSubmit: (d) => api("PATCH", `/products/${id}`, d),
-  }),
+  editProduct: (id) => {
+    const p = find("catalog", "product_id", id);
+    openForm({
+      title: "Edit product", values: p,
+      fields: [{ name: "product_name", label: "Product name" }, ...productFields(p)],
+      onSubmit: (d) => api("PATCH", `/products/${id}`, d),
+    });
+  },
   addSupplier: () => openForm({
     title: "Add supplier", submit: "Add", done: "Supplier added", fields: supplierFields,
     onSubmit: (d) => api("POST", "/suppliers", d),
@@ -887,18 +899,27 @@ const actions = {
       extra: `<datalist id="catalogList">${products.map((p) => `<option value="${esc(p.product_name)}">`).join("")}</datalist>`,
       fields: [
         { name: "product_name", label: "Product", list: "catalogList", hint: "Pick from the list or type a new product" },
-        { name: "category", label: "Category", required: false }, { name: "unit", label: "Unit (kg, bundle, pc…)", required: false },
+        ...productFields().map((f) => ({ ...f, required: false, hint: "Needed for a new product" })),
         { name: "selling_price", label: "Price (₱)", type: "number", step: "0.01", min: 0 },
         { name: "stock_quantity", label: "Stock", type: "number", step: 1, min: 0 },
         { name: "supplier_id", label: "Supplier", type: "select", required: false, options: [["", "— None —"], ...suppliers.map((s) => [s.supplier_id, s.supplier_name])],
           hint: "Not in the list? Use “Suggest a supplier” on the Products page." },
       ],
-      onInput: (form, e) => {   // known product -> fill in its category and unit
+      onInput: (form, e) => {   // a catalog product already has its category and unit: lock them; a new one needs both
         if (e.target.name !== "product_name") return;
         const match = products.find((p) => p.product_name.toLowerCase() === e.target.value.trim().toLowerCase());
-        if (match) { form.category.value = match.category; form.unit.value = match.unit; }
+        for (const [sel, value] of [[form.category, match?.category], [form.unit, match?.unit]]) {
+          if (value && ![...sel.options].some((o) => o.value === value)) sel.add(new Option(value, value));
+          sel.value = value || "";
+          sel.disabled = Boolean(match);   // disabled = not sent; the server uses the catalog's values
+          sel.closest("label").querySelector("small").textContent = match ? "From the catalog" : "Needed for a new product";
+        }
       },
-      onSubmit: (d) => api("POST", "/my/products", d),
+      onSubmit: (d) => {
+        const known = products.some((p) => p.product_name.toLowerCase() === d.product_name.trim().toLowerCase());
+        if (!known && (!d.category || !d.unit)) throw new Error("A new product needs a category and a unit.");
+        return api("POST", "/my/products", d);
+      },
     });
   },
   editMyProduct: (id) => {

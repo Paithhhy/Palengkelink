@@ -2,6 +2,7 @@
 // so they only ever see and change their own rows.
 const { asUser } = require("../db");
 const { HttpError, need, intParam, num } = require("../errors");
+const { checkName, checkText, checkPhone } = require("../validate");
 
 const run = (req, work) => asUser(req.user, work);
 const supplierOf = (body) => (body.supplier_id ? intParam(body.supplier_id) : null);
@@ -21,8 +22,10 @@ exports.myProfile = async (req, res) => {
 exports.updateMyProfile = async (req, res) => {
   const b = req.body;
   need(b, ["business_name", "contact_number", "address"]);
-  await run(req, (tx) => tx.$executeRaw`SELECT fn_vendor_update_profile(${String(b.business_name).trim()}::text,
-    ${String(b.contact_number).trim()}::text, ${String(b.address).trim()}::text, ${String(b.bio ?? "")}::text,
+  const business = checkName(b.business_name, "Business name"), contact = checkPhone(b.contact_number);
+  const address = checkName(b.address, "Address", { max: 255 }), bio = checkText(b.bio, "About your business", { required: false });
+  await run(req, (tx) => tx.$executeRaw`SELECT fn_vendor_update_profile(${business}::text,
+    ${contact}::text, ${address}::text, ${bio}::text,
     ${String(b.avatar ?? "")}::text, ${String(b.cover ?? "")}::text)`);
   res.json({ ok: true });
 };
@@ -41,8 +44,12 @@ exports.catalog = async (req, res) => {
 exports.addMyProduct = async (req, res) => {
   const b = req.body;
   need(b, ["product_name", "selling_price", "stock_quantity"]);
+  // Category and unit are only needed for a product that is not in the catalog yet (checked when given)
+  const name = checkName(b.product_name, "Product name");
+  const category = String(b.category ?? "").trim() ? checkName(b.category, "Category", { max: 80 }) : "";
+  const unit = String(b.unit ?? "").trim() ? checkName(b.unit, "Unit", { max: 30 }) : "";
   const [row] = await run(req, (tx) => tx.$queryRaw`SELECT fn_vendor_add_product_by_name(
-    ${String(b.product_name)}::text, ${String(b.category ?? "")}::text, ${String(b.unit ?? "")}::text, ${supplierOf(b)}::int,
+    ${name}::text, ${category}::text, ${unit}::text, ${supplierOf(b)}::int,
     ${num(b.selling_price, "selling_price")}::numeric, ${num(b.stock_quantity, "stock_quantity")}::int) AS vendor_product_id`);
   res.status(201).json(row);
 };
@@ -63,13 +70,15 @@ exports.deleteMyProduct = async (req, res) => {
 // ----- Maintenance requests -----
 exports.addMyRequest = async (req, res) => {
   need(req.body, ["stall_id", "issue"]);
-  const [row] = await run(req, (tx) => tx.$queryRaw`SELECT fn_vendor_submit_request(${intParam(req.body.stall_id)}::int, ${String(req.body.issue)}::text) AS request_id`);
+  const issue = checkText(req.body.issue, "Problem description");
+  const [row] = await run(req, (tx) => tx.$queryRaw`SELECT fn_vendor_submit_request(${intParam(req.body.stall_id)}::int, ${issue}::text) AS request_id`);
   res.status(201).json(row);
 };
 
 exports.updateMyRequest = async (req, res) => {
   need(req.body, ["issue"]);
-  await run(req, (tx) => tx.$executeRaw`SELECT fn_vendor_update_request(${intParam(req.params.id)}::int, ${String(req.body.issue)}::text)`);
+  const issue = checkText(req.body.issue, "Problem description");
+  await run(req, (tx) => tx.$executeRaw`SELECT fn_vendor_update_request(${intParam(req.params.id)}::int, ${issue}::text)`);
   res.json({ ok: true });
 };
 
@@ -80,9 +89,13 @@ exports.mySuggestions = async (req, res) =>
 exports.suggestSupplier = async (req, res) => {
   const b = req.body;
   need(b, ["supplier_name"]);
-  const [row] = await run(req, (tx) => tx.$queryRaw`SELECT fn_vendor_suggest_supplier(${String(b.supplier_name)}::text,
-    ${String(b.contact_number ?? "")}::text, ${String(b.address ?? "")}::text, ${String(b.supplies ?? "")}::text,
-    ${String(b.reason ?? "")}::text) AS suggestion_id`);
+  const name = checkName(b.supplier_name, "Supplier name");
+  const contact = String(b.contact_number ?? "").trim() ? checkPhone(b.contact_number) : "";
+  const address = String(b.address ?? "").trim() ? checkName(b.address, "Address", { max: 255 }) : "";
+  const supplies = checkText(b.supplies, "What they supply", { max: 300, required: false });
+  const reason = checkText(b.reason, "Why you suggest them", { max: 500, required: false });
+  const [row] = await run(req, (tx) => tx.$queryRaw`SELECT fn_vendor_suggest_supplier(${name}::text,
+    ${contact}::text, ${address}::text, ${supplies}::text, ${reason}::text) AS suggestion_id`);
   res.status(201).json(row);
 };
 
